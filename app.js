@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.5';
+const APP_VERSION = 'mobile 1.5.1';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -714,15 +714,22 @@ function isDupFdt(v) {
   for (const r of S.recs.values()) if (r.fdt.toLowerCase() === k) return true;
   return false;
 }
+function setBanner(el, html) {      // a message above the fields must not move the field being typed in
+  if (!el || el.innerHTML === html) return;
+  const f = document.activeElement, keep = f && f !== document.body && el.parentNode && !el.contains(f);
+  const y0 = keep ? f.getBoundingClientRect().top : 0;
+  el.innerHTML = html;
+  if (keep) { const d = f.getBoundingClientRect().top - y0; if (Math.abs(d) > 1) window.scrollBy(0, d); }
+}
 function renderOthersBar() {
   const el = $('#others'); if (!el || !S.card || S.card.id == null) return;
   const o = othersOn(S.card.id);
-  if (!o.length) { el.innerHTML = ''; return; }
+  if (!o.length) { setBanner(el, ''); return; }
   const editing = o.filter(x => x[1]).map(x => x[0]), viewing = o.filter(x => !x[1]).map(x => x[0]);
   let t = [];
   if (editing.length) t.push('⚠ ' + editing.join(', ') + ' עורך/ת את הטיקט הזה כרגע');
   if (viewing.length) t.push(viewing.join(', ') + ' צופה בטיקט הזה');
-  el.innerHTML = `<div class="banner ${editing.length ? 'warn' : 'info'}">${esc(t.join(' · '))}${editing.length && S.card.dirty ? '<br>בשמירה תתבקש לאשר אם אותם שדות השתנו.' : ''}</div>`;
+  setBanner(el, `<div class="banner ${editing.length ? 'warn' : 'info'}">${esc(t.join(' · '))}${editing.length && S.card.dirty ? '<br>בשמירה תתבקש לאשר אם אותם שדות השתנו.' : ''}</div>`);
 }
 function remoteUpdate(rec) {
   const c = S.card;
@@ -733,10 +740,10 @@ function remoteUpdate(rec) {
   if (!c.dirty) {
     c.rec = {...rec}; c.before = Object.fromEntries(COLS.map(x => [x, rec[x]]));
     renderCard();
-    $('#remote').innerHTML = `<div class="banner info">ℹ ${esc(who)} עדכן/ה את הטיקט. הכרטיס רוענן: ${esc(diff.map(x => LABEL[x]).join(', '))}</div>`;
+    setBanner($('#remote'), `<div class="banner info">ℹ ${esc(who)} עדכן/ה את הטיקט. הכרטיס רוענן: ${esc(diff.map(x => LABEL[x]).join(', '))}</div>`);
   } else {
     c.remote = rec;
-    $('#remote').innerHTML = `<div class="banner orange">⚠ ${esc(who)} שמר/ה שינויים בזמן שערכת: ${esc(diff.map(x => LABEL[x]).join(', '))}<br><button id="loadr">טען ערכים חדשים</button></div>`;
+    setBanner($('#remote'), `<div class="banner orange">⚠ ${esc(who)} שמר/ה שינויים בזמן שערכת: ${esc(diff.map(x => LABEL[x]).join(', '))}<br><button id="loadr">טען ערכים חדשים</button></div>`);
     $('#loadr').onclick = async () => {
       if (!await ask('טעינת ערכים', 'השינויים שלך בכרטיס יימחקו ויוצגו הערכים מהשרת. להמשיך?')) return;
       c.rec = {...c.remote}; c.before = Object.fromEntries(COLS.map(x => [x, c.remote[x]])); c.dirty = false; renderCard(); track();
@@ -745,7 +752,7 @@ function remoteUpdate(rec) {
 }
 function remoteDeleted() {
   S.card.deleted = true;
-  $('#remote').innerHTML = '<div class="banner warn">⚠ הטיקט נמחק על ידי משתמש אחר. אי אפשר לשמור בו שינויים.</div>';
+  setBanner($('#remote'), '<div class="banner warn">⚠ הטיקט נמחק על ידי משתמש אחר. אי אפשר לשמור בו שינויים.</div>');
   updateSave();
 }
 async function closeCard() {
