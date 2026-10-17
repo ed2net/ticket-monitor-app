@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.1';
+const APP_VERSION = 'mobile 1.1.1';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -331,7 +331,7 @@ function lookupValues(kind, parent) {
 
 // ───────────── start ─────────────
 async function start() {
-  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js'); } catch {} }
+  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(r => r.update()).catch(() => {}); } catch {} }
   S.cloud.onSession = () => { if (S.session.remember) { S.session.rt = S.cloud.rt; saveSession(S.session); } };
   if (S.session.remember && S.session.rt) {
     S.cloud.rt = S.session.rt;
