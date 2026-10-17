@@ -1,0 +1,811 @@
+/* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
+   No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
+'use strict';
+const APP_VERSION = 'mobile 1.0';
+const CFG = window.TM_CONFIG || {};
+const TOPIC = 'realtime:ticketmonitor';
+
+// ───────────── schema (same order and names as the desktop program) ─────────────
+const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'], ['sent_by', 'נשלח ע"י'], ['sent_group', 'נשלח בקבוצה'],
+  ['city', 'עיר'], ['site', 'מתחם'], ['street', 'רחוב'], ['house', 'בית'], ['entrance', 'כניסה'], ['cabinet', 'ארונית'],
+  ['work_type', 'סוג העבודה'], ['contractor', 'קבלן מבצע'], ['escalation_date', 'תאריך הקפצה'], ['fault', 'זיהוי תקלה'],
+  ['close_type', 'סוג סגירת התקלה'], ['status', 'סטטוס'], ['infrastructure', 'תשתית'], ['close_date', 'תאריך סגירה'],
+  ['solution', 'פתרון'], ['notes', 'הערות']];
+const COLS = F.map(x => x[0]);
+const LABEL = Object.fromEntries(F);
+const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date']);
+const MULTI = new Set(['infrastructure', 'solution', 'notes']);
+const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
+  contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status'};
+const GROUPS = [['מיקום', ['city', 'site', 'street', 'house', 'entrance', 'cabinet']],
+  ['תקלה', ['fault', 'contractor', 'status', 'entry_date']], ['טיפול', ['solution', 'notes']]];
+const EXTRA = ['fdt', 'sent_by', 'sent_group', 'work_type', 'escalation_date', 'close_type', 'infrastructure', 'close_date'];
+const SEL = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'].concat(COLS).join(',');
+const DONE_WORDS = ['finish', 'סגור', 'נסגר', 'בוצע', 'done', 'closed'];
+
+// ───────────── helpers ─────────────
+const pad = n => String(n).padStart(2, '0');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const norm = v => v == null ? '' : String(v).replace(/\r\n?/g, '\n').trim();
+const normCity = v => norm(v).replace(/_/g, ' ').replace(/\s+/g, ' ');
+const same = (a, b) => norm(a) === norm(b);
+function fmtDate(d) {
+  const s = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+  return (d.getHours() || d.getMinutes()) ? `${s} ${pad(d.getHours())}:${pad(d.getMinutes())}` : s;
+}
+function serverDateText(v) {          // database timestamp (Israel local time, no zone)
+  if (!v) return '';
+  const m = String(v).match(/^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)/);
+  return m ? fmtDate(new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5])) : String(v);
+}
+function parseDate(t) {
+  t = norm(t);
+  if (!t) return null;
+  let m = t.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (m) {
+    const d = new Date(+m[3], m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0));
+    return (d.getDate() === +m[1] && d.getMonth() === m[2] - 1 && +(m[4] || 0) < 24) ? d : null;
+  }
+  m = t.match(/^(\d{4})-(\d\d)-(\d\d)(?:[ T](\d\d):(\d\d))?/);
+  return m ? new Date(+m[1], m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0)) : null;
+}
+const toIso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+function parseTs(v) {                 // server time with zone -> Date (Safari needs exactly 3 fraction digits)
+  if (!v) return null;
+  let s = String(v).trim().replace(' ', 'T').replace(/\.(\d+)/, (_, d) => '.' + (d + '000').slice(0, 3));
+  if (/[+-]\d\d$/.test(s)) s += ':00';
+  if (!/[zZ]|[+-]\d\d:\d\d$/.test(s)) s += 'Z';
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+}
+const localTime = v => { const d = parseTs(v); return d ? `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}` : ''; };
+const nowText = () => { const d = new Date(); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+function dbToRec(row) {
+  const r = {};
+  for (const c of COLS) r[c] = DATE_COLS.has(c) ? serverDateText(row[c]) : norm(row[c]);
+  r.city = normCity(r.city);
+  r.id = +row.id; r._v = +(row.version || 1); r._ua = row.updated_at || ''; r._ub = row.updated_by || '';
+  r._s = COLS.map(c => r[c]).join(' ').toLowerCase();
+  return r;
+}
+function recToDb(vals, cols) {
+  const o = {};
+  for (const c of cols) {
+    const v = norm(vals[c]);
+    if (DATE_COLS.has(c)) { const d = parseDate(v); o[c] = d ? toIso(d) : null; }
+    else o[c] = c === 'city' ? normCity(v) : v;
+  }
+  return o;
+}
+function stClass(r) {
+  const s = (r.status || '').toLowerCase();
+  if (DONE_WORDS.some(w => s.includes(w))) return 'done';
+  if (s.includes('טיפול')) return 'work';
+  return (!s && r.close_date) ? 'done' : 'open';
+}
+const stText = r => r.status || (stClass(r) === 'done' ? 'סגור' : 'פתוח');
+
+// ───────────── errors + cloud ─────────────
+class CloudError extends Error { constructor(m, status = 0, code = '') { super(m); this.status = status; this.code = code; } }
+class OfflineError extends CloudError {}
+class AuthError extends CloudError {}
+class DupError extends CloudError {}
+class PermError extends CloudError {}
+
+class Cloud {
+  constructor(url, key) { this.url = String(url || '').replace(/\/$/, ''); this.key = key; this.at = ''; this.rt = ''; this.exp = 0; this.user = {}; this.onSession = null; this._ref = null; }
+  async raw(method, path, body, headers = {}, token) {
+    const h = {apikey: this.key, 'Content-Type': 'application/json', Accept: 'application/json', ...headers};
+    if (token) h.Authorization = 'Bearer ' + token;
+    let r;
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 20000);
+    try { r = await fetch(this.url + path, {method, headers: h, body: body == null ? undefined : JSON.stringify(body), signal: ctl.signal, cache: 'no-store'}); }
+    catch (e) { throw new OfflineError('אין חיבור לשרת'); }
+    finally { clearTimeout(t); }
+    const txt = await r.text();
+    let data = null;
+    try { data = txt ? JSON.parse(txt) : null; } catch { data = {message: txt.slice(0, 300)}; }
+    return {status: r.status, data};
+  }
+  err(status, info) {
+    info = info && typeof info === 'object' && !Array.isArray(info) ? info : {};
+    const msg = info.msg || info.message || info.error_description || info.error || ('HTTP ' + status);
+    const code = String(info.code || info.error_code || '');
+    if (status === 409 || code === '23505') return new DupError(msg, status, code);
+    if (code === '42501' || (status === 403 && !['PGRST301', 'PGRST302'].includes(code))) return new PermError('אין לך הרשאה לפעולה הזו.', status, code);
+    if (status === 401 || status === 403 || code === 'PGRST301') return new AuthError(msg, status, code);
+    if ([502, 503, 504, 520, 521, 522, 523, 524, 540, 544].includes(status)) return new OfflineError(`השרת אינו זמין כרגע (HTTP ${status}). ייתכן שהפרויקט מושהה.`, status, code);
+    return new CloudError(`${msg} (HTTP ${status})`, status, code);
+  }
+  setSession(d) {
+    this.at = d.access_token; this.rt = d.refresh_token || this.rt;
+    this.exp = Date.now() + 1000 * (+d.expires_in || 3600);
+    if (d.user) this.user = {id: d.user.id, email: d.user.email};
+    if (this.onSession) this.onSession();
+  }
+  async signIn(email, pw) {
+    const r = await this.raw('POST', '/auth/v1/token?grant_type=password', {email: email.trim(), password: pw});
+    if (r.status >= 400) { if ([400, 401, 422].includes(r.status)) throw new AuthError('דוא"ל או סיסמה שגויים.'); throw this.err(r.status, r.data); }
+    this.setSession(r.data);
+  }
+  refresh() {
+    if (this._ref) return this._ref;
+    this._ref = (async () => {
+      if (!this.rt) throw new AuthError('החיבור הסתיים. יש להתחבר מחדש.');
+      const r = await this.raw('POST', '/auth/v1/token?grant_type=refresh_token', {refresh_token: this.rt});
+      if (r.status >= 400) {
+        if ([400, 401, 403, 422].includes(r.status)) { this.rt = ''; throw new AuthError('החיבור הסתיים. יש להתחבר מחדש.'); }
+        throw this.err(r.status, r.data);
+      }
+      this.setSession(r.data);
+    })().finally(() => { this._ref = null; });
+    return this._ref;
+  }
+  async ensureFresh(margin = 120) { if (this.rt && Date.now() > this.exp - margin * 1000) await this.refresh(); }
+  async req(method, path, body, headers) {
+    await this.ensureFresh();
+    let r = await this.raw(method, path, body, headers, this.at);
+    if (r.status === 401 && this.rt) { await this.refresh(); r = await this.raw(method, path, body, headers, this.at); }
+    if (r.status >= 400) throw this.err(r.status, r.data);
+    return r.data;
+  }
+  async fetchAll(table, q) {
+    let out = [], start = 0;
+    for (;;) {
+      const rows = await this.req('GET', `/rest/v1/${table}?${q}`, null, {'Range-Unit': 'items', Range: `${start}-${start + 999}`}) || [];
+      out = out.concat(rows);
+      if (rows.length < 1000) return out;
+      start += 1000;
+    }
+  }
+  loadTickets() { return this.fetchAll('tickets', 'select=' + SEL + '&order=id'); }
+  loadLookups() { return this.fetchAll('lookups', 'select=id,kind,value,parent,active&order=kind,value'); }
+  async loadProfiles() {
+    try { return await this.fetchAll('profiles', 'select=id,display_name,role,can_edit_lookups'); }
+    catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; return this.fetchAll('profiles', 'select=id,display_name,role'); }
+  }
+  async lastLogTime() { const r = await this.req('GET', '/rest/v1/ticket_log?select=at&order=at.desc&limit=1'); return r && r[0] ? r[0].at : ''; }
+  async changesSince(tm, lm) {
+    const back = s => { const d = parseTs(s); return d ? new Date(d.getTime() - 120000).toISOString() : ''; };
+    let tq = 'select=' + SEL + '&order=id', lq = 'select=ticket_id,at&action=eq.delete&order=at';
+    if (back(tm)) tq += '&updated_at=gte.' + encodeURIComponent(back(tm));
+    if (back(lm)) lq += '&at=gte.' + encodeURIComponent(back(lm));
+    return [await this.fetchAll('tickets', tq), await this.fetchAll('ticket_log', lq)];
+  }
+  async getTicket(id) { const r = await this.req('GET', `/rest/v1/tickets?select=${SEL}&id=eq.${+id}`); return r && r[0] ? r[0] : null; }
+  async insertTicket(row) { const r = await this.req('POST', `/rest/v1/tickets?select=${SEL}`, row, {Prefer: 'return=representation'}); return r[0]; }
+  async updateTicket(id, version, body) {
+    const r = await this.req('PATCH', `/rest/v1/tickets?id=eq.${+id}&version=eq.${+version}&select=${SEL}`, body, {Prefer: 'return=representation'});
+    return r && r[0] ? r[0] : null;
+  }
+  ticketHistory(id) { return this.fetchAll('ticket_log', `select=id,action,changed,old_row,new_row,by_user,at&ticket_id=eq.${+id}&order=at.desc`); }
+  changePassword(pw) { return this.req('PUT', '/auth/v1/user', {password: pw}); }
+  async signOut() { try { if (this.at) await this.raw('POST', '/auth/v1/logout', {}, {}, this.at); } catch {} this.at = this.rt = ''; this.exp = 0; }
+  rtUrl() { return this.url.replace(/^http/, 'ws') + '/realtime/v1/websocket?apikey=' + encodeURIComponent(this.key) + '&vsn=1.0.0'; }
+}
+
+// ───────────── live updates + who is online ─────────────
+class Realtime {
+  constructor(cloud, h) { this.c = cloud; this.h = h; this.ws = null; this.ref = 0; this.joinRef = ''; this.meta = null; this.online = false; this.stopped = false; this.delay = 2000; this.pres = {}; this.hb = null; this.tok = ''; this.timer = null; }
+  start() { this.stopped = false; this.connect(); }
+  stop() { this.stopped = true; clearInterval(this.hb); clearTimeout(this.timer); try { this.ws && this.ws.close(); } catch {} }
+  alive() { return this.ws && this.ws.readyState === 1; }
+  send(topic, event, payload, jr) {
+    if (!this.alive()) return;
+    const m = {topic, event, payload, ref: String(++this.ref)};
+    if (jr) m.join_ref = jr;
+    this.ws.send(JSON.stringify(m));
+  }
+  async connect() {
+    if (this.stopped || (this.ws && this.ws.readyState <= 1)) return;
+    try { await this.c.ensureFresh(); }
+    catch (e) { if (e instanceof AuthError) { this.setOnline(false); this.h.onAuth(); return; } }
+    let ws;
+    try { ws = new WebSocket(this.c.rtUrl()); } catch { return this.retry(); }
+    this.ws = ws;
+    ws.onopen = () => {
+      this.pres = {};
+      this.joinRef = String(++this.ref);
+      this.tok = this.c.at;
+      ws.send(JSON.stringify({topic: TOPIC, event: 'phx_join', ref: this.joinRef, join_ref: this.joinRef, payload: {
+        config: {broadcast: {self: false, ack: false}, presence: {key: this.c.user.id || '', enabled: true},
+          postgres_changes: [{event: '*', schema: 'public', table: 'tickets'}, {event: '*', schema: 'public', table: 'lookups'}], private: false},
+        access_token: this.c.at}}));
+      clearInterval(this.hb);
+      this.hb = setInterval(() => {
+        this.send('phoenix', 'heartbeat', {});
+        if (this.c.at && this.c.at !== this.tok) { this.tok = this.c.at; this.send(TOPIC, 'access_token', {access_token: this.tok}, this.joinRef); }
+      }, 25000);
+    };
+    ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; } this.msg(m); };
+    ws.onclose = () => { clearInterval(this.hb); if (this.ws === ws) this.ws = null; this.setOnline(false); this.retry(); };
+    ws.onerror = () => {};
+  }
+  retry() {
+    if (this.stopped) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.connect(), this.delay);
+    this.delay = Math.min(this.delay * 2, 60000);
+  }
+  reconnectNow() { this.delay = 2000; clearTimeout(this.timer); this.connect(); }
+  setOnline(on) { if (on !== this.online) { this.online = on; this.h.onStatus(on); } }
+  msg(m) {
+    const ev = m.event, p = m.payload || {};
+    if (ev === 'phx_reply' && m.ref === this.joinRef) {
+      if (p.status === 'ok') { this.delay = 2000; this.setOnline(true); this.trackNow(); }
+      else { try { this.ws.close(); } catch {} }
+    } else if (ev === 'postgres_changes') {
+      this.h.onChange((p.data || {}).table || '');
+    } else if (ev === 'presence_state') {
+      this.pres = {};
+      for (const [k, v] of Object.entries(p)) this.pres[k] = [...((v || {}).metas || [])];
+      this.h.onPresence(this.conns());
+    } else if (ev === 'presence_diff') {
+      for (const [k, v] of Object.entries(p.joins || {})) {
+        const cur = this.pres[k] || (this.pres[k] = []);
+        const refs = new Set(cur.map(x => x.phx_ref));
+        for (const mm of (v || {}).metas || []) if (!refs.has(mm.phx_ref)) cur.push(mm);
+      }
+      for (const [k, v] of Object.entries(p.leaves || {})) {
+        const gone = new Set(((v || {}).metas || []).map(x => x.phx_ref));
+        if (this.pres[k]) { this.pres[k] = this.pres[k].filter(x => !gone.has(x.phx_ref)); if (!this.pres[k].length) delete this.pres[k]; }
+      }
+      this.h.onPresence(this.conns());
+    } else if (ev === 'phx_error' || ev === 'phx_close') {
+      try { this.ws.close(); } catch {}
+    }
+  }
+  conns() { const out = []; for (const [k, ms] of Object.entries(this.pres)) for (const m of ms) out.push({...m, user_id: m.user_id || k}); return out; }
+  track(meta) { this.meta = meta; if (this.online) this.trackNow(); }
+  trackNow() { if (this.meta) this.send(TOPIC, 'presence', {type: 'presence', event: 'track', payload: this.meta}, this.joinRef); }
+}
+
+// ───────────── local storage (IndexedDB for data, localStorage for the sign-in) ─────────────
+const kv = {
+  db: null,
+  open() {
+    return this.db || (this.db = new Promise((res, rej) => {
+      const r = indexedDB.open('ticketmonitor', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    }));
+  },
+  async get(k) {
+    try { const db = await this.open(); return await new Promise(res => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => res(undefined); }); }
+    catch { return undefined; }
+  },
+  async set(k, v) {
+    try { const db = await this.open(); await new Promise(res => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = res; }); }
+    catch {}
+  },
+};
+const SESSION_KEY = 'tm_session';
+function loadSession() { try { return JSON.parse(localStorage.getItem(SESSION_KEY) || '{}'); } catch { return {}; } }
+function saveSession(s) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch {} }
+
+// ───────────── app state ─────────────
+const S = {
+  cloud: new Cloud(CFG.url, CFG.key), rt: null, session: loadSession(), conn: Math.random().toString(16).slice(2, 14),
+  recs: new Map(), lookups: [], names: {}, role: 'user', tm: '', lm: '', loaded: false, readonly: false, cacheAt: '',
+  restOk: true, rtOnline: false, connections: [], view: 'login', chip: 'open', query: '', limit: 60,
+  card: null, syncing: false, syncAgain: false, pollTimer: null,
+};
+const $ = s => document.querySelector(s);
+const app = () => $('#app');
+
+function toast(t, ms = 2600) {
+  const el = $('#toast');
+  el.textContent = t; el.classList.remove('hidden');
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add('hidden'), ms);
+}
+function sheet(html) {
+  $('#toast').classList.add('hidden');
+  const m = $('#modal');
+  m.innerHTML = `<div class="sheet"><div class="grip"></div>${html}</div>`;
+  m.classList.remove('hidden');
+  m.onclick = e => { if (e.target === m) closeSheet(); };
+  return m.firstElementChild;
+}
+function closeSheet() { const m = $('#modal'); m.classList.add('hidden'); m.innerHTML = ''; if (closeSheet.cb) { const cb = closeSheet.cb; closeSheet.cb = null; cb(false); } }
+function ask(title, text, yes = 'כן', no = 'ביטול', danger = false) {
+  return new Promise(res => {
+    const s = sheet(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="btns"><button class="btn ${danger ? 'red' : 'dark'}" data-a="y">${esc(yes)}</button><button class="btn" data-a="n">${esc(no)}</button></div>`);
+    closeSheet.cb = res;
+    s.querySelector('[data-a=y]').onclick = () => { closeSheet.cb = null; closeSheet(); res(true); };
+    s.querySelector('[data-a=n]').onclick = () => { closeSheet.cb = null; closeSheet(); res(false); };
+  });
+}
+function info(title, text) { return ask(title, text, 'סגור', '', false).then(() => {}); }
+const errText = e => e instanceof OfflineError ? 'אין חיבור לשרת. בדוק את האינטרנט ונסה שוב.' :
+  e instanceof AuthError ? 'החיבור הסתיים — יש להתחבר מחדש.' : (e && e.message) || String(e);
+const userName = id => !id ? '—' : (S.names[id] || 'משתמש');
+const myName = () => S.names[S.cloud.user.id] || (S.cloud.user.email || S.session.email || '').split('@')[0] || '—';
+function lookupValues(kind, parent) {
+  const set = new Set();
+  for (const l of S.lookups) if (l.kind === kind && (parent == null || (l.parent || '') === parent) && l.active !== false && l.value) set.add(l.value);
+  return [...set].sort((a, b) => a.localeCompare(b, 'he'));
+}
+
+// ───────────── start ─────────────
+async function start() {
+  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js'); } catch {} }
+  S.cloud.onSession = () => { if (S.session.remember) { S.session.rt = S.cloud.rt; saveSession(S.session); } };
+  if (S.session.remember && S.session.rt) {
+    S.cloud.rt = S.session.rt;
+    renderLoading('מתחבר...');
+    try { await S.cloud.refresh(); return enterOnline(); }
+    catch (e) {
+      if (e instanceof OfflineError) { const c = await kv.get('cache'); if (c) return enterOffline(c); return renderLogin('אין חיבור לשרת.'); }
+      S.session.rt = ''; saveSession(S.session);
+      return renderLogin('הכניסה הקודמת הסתיימה — יש להתחבר מחדש.');
+    }
+  }
+  renderLogin('');
+}
+
+function renderLoading(t) { app().innerHTML = `<div class="loading">${esc(t)}</div>`; }
+
+async function renderLogin(msg) {
+  S.view = 'login';
+  const cache = await kv.get('cache');
+  app().innerHTML = `<div class="screen"><div class="login">
+    <div class="logo">Ticket Monitor</div><div class="lsub">כניסה עם הדוא"ל והסיסמה שלך</div>
+    <input id="email" class="inp" type="email" autocomplete="username" placeholder="דוא&quot;ל" value="${esc(S.session.email || '')}">
+    <input id="pw" class="inp" type="password" autocomplete="current-password" placeholder="סיסמה">
+    <label class="chk"><input id="rem" type="checkbox" ${S.session.remember !== false ? 'checked' : ''}> זכור אותי בטלפון הזה</label>
+    <button id="go" class="big">כניסה</button>
+    <div id="err" class="err">${esc(msg || '')}</div>
+    ${cache ? `<button id="off" class="ghost">אין חיבור? פתח עותק אחרון (<bdi dir="ltr">${esc(cache.saved_text || '')}</bdi>, קריאה בלבד)</button>` : ''}
+    <div class="note">הוספה למסך הבית: iPhone — שיתוף ← "הוסף למסך הבית" · Android — תפריט ⋮ ← "הוסף למסך הבית"</div>
+  </div></div>`;
+  const go = async () => {
+    const email = $('#email').value.trim(), pw = $('#pw').value;
+    if (!email || !pw) { $('#err').textContent = 'יש להזין דוא"ל וסיסמה.'; return; }
+    $('#go').disabled = true; $('#err').textContent = 'מתחבר...';
+    try { await S.cloud.signIn(email, pw); }
+    catch (e) { $('#go').disabled = false; $('#err').textContent = e instanceof AuthError ? e.message : errText(e); return; }
+    S.session = {email, remember: $('#rem').checked, rt: $('#rem').checked ? S.cloud.rt : ''};
+    saveSession(S.session);
+    enterOnline();
+  };
+  $('#go').onclick = go;
+  $('#pw').onkeydown = e => { if (e.key === 'Enter') go(); };
+  if (cache) $('#off').onclick = () => enterOffline(cache);
+}
+
+// ───────────── online / offline ─────────────
+async function enterOnline() {
+  S.readonly = false; S.view = 'list';
+  renderLoading('טוען טיקטים...');
+  try { await fullLoad(); }
+  catch (e) {
+    if (e instanceof AuthError) return sessionEnded();
+    const c = await kv.get('cache');
+    if (c) return enterOffline(c);
+    return renderLogin(errText(e));
+  }
+  startLive();
+  renderList();
+}
+function enterOffline(cache) {
+  S.readonly = true; S.view = 'list'; S.cacheAt = cache.saved_text || '';
+  S.names = cache.names || {}; S.lookups = cache.lookups || [];
+  S.recs = new Map((cache.rows || []).map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
+  S.loaded = true;
+  renderList();
+}
+async function fullLoad() {
+  const c = S.cloud;
+  const [tickets, lookups, profiles, logtime] = await Promise.all([c.loadTickets(), c.loadLookups(), c.loadProfiles(), c.lastLogTime()]);
+  setProfiles(profiles);
+  S.recs = new Map();
+  S.raw = new Map();
+  let mark = null;
+  for (const row of tickets) { const r = dbToRec(row); S.recs.set(r.id, r); S.raw.set(r.id, row); const d = parseTs(row.updated_at); if (d && (!mark || d > mark)) mark = d; }
+  S.tm = mark ? mark.toISOString() : '';
+  S.lm = logtime || new Date().toISOString();
+  S.lookups = lookups;
+  S.loaded = true; S.restOk = true;
+  saveCache();
+}
+function setProfiles(ps) {
+  S.names = Object.fromEntries(ps.map(p => [p.id, (p.display_name || '').trim()]));
+  const me = ps.find(p => p.id === S.cloud.user.id) || {};
+  S.role = me.role || 'user';
+}
+let cacheTimer = null;
+function saveCache() {
+  clearTimeout(cacheTimer);
+  cacheTimer = setTimeout(() => {
+    if (S.readonly || !S.loaded) return;
+    kv.set('cache', {saved_text: nowText(), names: S.names, lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
+  }, 3000);
+}
+function startLive() {
+  if (S.rt) S.rt.stop();
+  S.rt = new Realtime(S.cloud, {
+    onChange: t => { if (t === 'lookups') reloadLookups(); else { clearTimeout(S.syncT); S.syncT = setTimeout(sync, 400); } },
+    onPresence: c => { S.connections = c; refreshLive(); },
+    onStatus: on => { const was = S.rtOnline; S.rtOnline = on; if (!on) S.connections = []; if (on && !was) { sync(); reloadLookups(); } refreshLive(); setPoll(); },
+    onAuth: () => sessionEnded(),
+  });
+  S.rt.track(presenceMeta());
+  S.rt.start();
+  setPoll();
+  clearInterval(S.tokTimer);
+  S.tokTimer = setInterval(() => S.cloud.ensureFresh(600).catch(e => { if (e instanceof AuthError) sessionEnded(); }), 300000);
+}
+function setPoll() { clearInterval(S.pollTimer); S.pollTimer = setInterval(sync, S.rtOnline ? 120000 : 30000); }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !S.readonly && S.loaded) { sync(); if (S.rt) S.rt.reconnectNow(); }
+});
+
+async function sync() {
+  if (S.readonly || !S.loaded) return;
+  if (S.syncing) { S.syncAgain = true; return; }
+  S.syncing = true;
+  try {
+    const [rows, deleted] = await S.cloud.changesSince(S.tm, S.lm);
+    S.restOk = true;
+    const changed = [], removed = [];
+    for (const row of rows) {
+      const r = dbToRec(row), old = S.recs.get(r.id);
+      if (old && old._v > r._v) continue;
+      if (!old || old._v !== r._v || old._s !== r._s) { S.recs.set(r.id, r); S.raw.set(r.id, row); changed.push(r.id); }
+      const d = parseTs(row.updated_at); if (d && (!parseTs(S.tm) || d > parseTs(S.tm))) S.tm = d.toISOString();
+    }
+    for (const d of deleted) {
+      const id = +d.ticket_id;
+      if (S.recs.has(id)) { S.recs.delete(id); S.raw.delete(id); removed.push(id); }
+      const t = parseTs(d.at); if (t && (!parseTs(S.lm) || t > parseTs(S.lm))) S.lm = t.toISOString();
+    }
+    if (changed.length || removed.length) { saveCache(); onDataChanged(changed, removed); }
+  } catch (e) {
+    if (e instanceof AuthError) return sessionEnded();
+    S.restOk = false;
+  } finally {
+    S.syncing = false;
+    refreshLive();
+    if (S.syncAgain) { S.syncAgain = false; setTimeout(sync, 0); }
+  }
+}
+async function reloadLookups() { try { S.lookups = await S.cloud.loadLookups(); saveCache(); } catch {} }
+function onDataChanged(changed, removed) {
+  if (S.view === 'list') renderListBody();
+  if (S.view === 'card' && S.card && S.card.id != null) {
+    if (removed.includes(S.card.id)) remoteDeleted();
+    else if (changed.includes(S.card.id)) remoteUpdate(S.recs.get(S.card.id));
+  }
+}
+async function sessionEnded() {
+  if (S.ending) return;
+  S.ending = true;
+  if (S.rt) S.rt.stop();
+  clearInterval(S.pollTimer); clearInterval(S.tokTimer);
+  S.session.rt = ''; saveSession(S.session);
+  S.ending = false;
+  renderLogin('החיבור לשרת הסתיים. יש להתחבר מחדש.');
+}
+
+// ───────────── presence ─────────────
+function presenceMeta() {
+  const c = S.card;
+  return {user_id: S.cloud.user.id || '', name: myName(), conn: S.conn, ticket_id: c && c.id != null ? c.id : null,
+    fdt: c && c.rec ? c.rec.fdt : '', editing: !!(c && c.dirty), new_ticket: !!(c && c.id == null), app: APP_VERSION,
+    since: new Date().toISOString()};
+}
+function track() { if (S.rt) S.rt.track(presenceMeta()); }
+function others() { const me = S.cloud.user.id; return S.connections.filter(c => c.conn !== S.conn && c.user_id !== me); }
+function othersOn(id) {
+  const out = {};
+  for (const c of S.connections) if (c.conn !== S.conn && c.ticket_id === id) { const n = c.name || userName(c.user_id); out[n] = out[n] || !!c.editing; }
+  return Object.entries(out);
+}
+function pillHtml() {
+  if (S.readonly) return `<div class="pill ro"><i></i><span>לא מקוון — קריאה בלבד</span></div>`;
+  if (!S.restOk) return `<div class="pill off"><i></i><span>אין חיבור לשרת</span></div>`;
+  if (!S.rtOnline) return `<div class="pill poll"><i></i><span>מחובר · עדכון חי לא פעיל</span></div>`;
+  const users = {};
+  for (const c of others()) {
+    const u = users[c.user_id] || (users[c.user_id] = {name: c.name || userName(c.user_id), acts: []});
+    if (c.ticket_id != null) u.acts.push(`טיקט ${esc(c.fdt || c.ticket_id)}${c.editing ? ' ✎' : ''}`);
+    else if (c.new_ticket) u.acts.push('טיקט חדש' + (c.editing ? ' ✎' : ''));
+  }
+  const parts = Object.values(users).map(u => `<b>${esc(u.name)}</b>${u.acts.length ? ` (${u.acts.join(', ')})` : ''}`);
+  return `<div class="pill live"><i></i><span>${parts.length ? 'מחוברים: ' + parts.join(' · ') : 'מחובר'}</span></div>`;
+}
+function refreshLive() {
+  const p = $('#pill'); if (p) p.innerHTML = pillHtml();
+  if (S.view === 'list') renderListBody();
+  if (S.view === 'card') renderOthersBar();
+}
+
+// ───────────── list ─────────────
+function renderList() {
+  S.view = 'list'; S.card = null; track();
+  app().innerHTML = `<div class="screen">
+    <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><button class="icon" id="set">⚙</button></div><div id="pill">${pillHtml()}</div></div>
+    ${S.readonly ? `<div class="banner grey">הנתונים מ-<bdi dir="ltr">${esc(S.cacheAt)}</bdi>. אפשר לחפש, לפתוח טיקט, להעתיק ולשלוח ב-WhatsApp. שמירה — כשתחזור הרשת.<br><button id="retry">התחבר שוב</button></div>` : ''}
+    <input id="q" class="search" type="search" placeholder="🔍  חיפוש: מספר, עיר, רחוב, ארונית…" value="${esc(S.query)}">
+    <div class="chips">${[['open', 'פתוחים'], ['work', 'בטיפול'], ['today', 'נסגרו היום'], ['all', 'הכל']].map(([k, t]) =>
+      `<button class="chip ${S.chip === k ? 'on' : ''}" data-chip="${k}">${t}</button>`).join('')}</div>
+    <div class="count" id="count"></div><div class="list" id="list"></div>
+    ${S.readonly ? '' : '<button class="fab" id="new">+</button>'}</div>`;
+  $('#set').onclick = settings;
+  $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
+  document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = b.dataset.chip; S.limit = 60; renderList(); });
+  if ($('#new')) $('#new').onclick = () => openCard(null);
+  if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(enterOnline).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('')); } else renderLogin(''); };
+  renderListBody();
+}
+function filtered() {
+  const today = nowText().slice(0, 10);
+  let rows = [...S.recs.values()];
+  if (S.chip === 'open') rows = rows.filter(r => stClass(r) !== 'done');
+  else if (S.chip === 'work') rows = rows.filter(r => stClass(r) === 'work');
+  else if (S.chip === 'today') rows = rows.filter(r => r.close_date.startsWith(today));
+  const words = S.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length) rows = rows.filter(r => words.every(w => r._s.includes(w)));
+  return rows.sort((a, b) => b.id - a.id);
+}
+function renderListBody() {
+  const list = $('#list'); if (!list) return;
+  const rows = filtered();
+  $('#count').textContent = `${rows.length} טיקטים`;
+  const open = {};
+  for (const c of S.connections) if (c.conn !== S.conn && c.ticket_id != null) { const o = open[c.ticket_id] || (open[c.ticket_id] = {names: [], edit: false}); o.names.push(c.name || userName(c.user_id)); o.edit = o.edit || !!c.editing; }
+  list.innerHTML = rows.slice(0, S.limit).map(r => {
+    const st = stClass(r), o = open[r.id];
+    const addr = [r.city, [r.street, r.house].filter(Boolean).join(' '), r.cabinet ? 'ארונית ' + r.cabinet : ''].filter(Boolean).join(' · ');
+    const left = [r.fault, r.contractor].filter(Boolean).join(' · ');
+    return `<button class="card st-${st} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
+      <div class="row1"><span class="fdt">${esc(r.fdt)}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
+      <div class="addr">${esc(addr) || '—'}</div>
+      <div class="meta"><span>${esc(left)}</span><span dir="ltr">${esc(r.entry_date.slice(0, 5) + (r.entry_date.length > 10 ? r.entry_date.slice(10) : ''))}</span></div>
+      ${o ? `<div class="who">${o.edit ? '✎ ' + esc(o.names.join(', ')) + ' עורך/ת את הטיקט כרגע' : '👁 ' + esc(o.names.join(', ')) + ' צופה בטיקט'}</div>` : ''}
+    </button>`;
+  }).join('') + (rows.length > S.limit ? `<button class="more" id="more">הצג עוד (${rows.length - S.limit})</button>` : '') +
+    (!rows.length ? '<div class="loading">אין טיקטים להצגה</div>' : '');
+  list.querySelectorAll('.card').forEach(b => b.onclick = () => openCard(+b.dataset.id));
+  if ($('#more')) $('#more').onclick = () => { S.limit += 100; renderListBody(); };
+}
+
+// ───────────── card ─────────────
+function openCard(id) {
+  const rec = id == null ? null : S.recs.get(id);
+  const vals = rec ? Object.fromEntries(COLS.map(c => [c, rec[c]])) : Object.fromEntries(COLS.map(c => [c, '']));
+  S.card = {id, rec: rec ? {...rec} : null, before: vals, remote: null, deleted: false, dirty: false, extra: id == null};
+  S.view = 'card';
+  renderCard();
+  track();
+}
+function fieldHtml(c) {
+  const v = S.card.before[c] ?? '';
+  const ro = S.readonly ? 'readonly' : '';
+  const list = LOOKUP[c] ? `list="dl-${c}"` : '';
+  const ltr = DATE_COLS.has(c) || c === 'fdt' || c === 'house' || c === 'cabinet' ? 'ltr' : '';
+  const input = MULTI.has(c) ? `<textarea data-c="${c}" ${ro} rows="2">${esc(v)}</textarea>`
+    : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? 'inputmode="numeric" placeholder="dd/mm/yyyy HH:MM"' : ''} autocomplete="off">`;
+  const now = DATE_COLS.has(c) && !S.readonly ? `<button class="now" data-now="${c}">עכשיו</button>` : '';
+  return `<div class="f" id="f-${c}"><label>${esc(LABEL[c])}</label>${input}${now}</div>`;
+}
+function datalists() {
+  const out = [];
+  for (const [c, kind] of Object.entries(LOOKUP)) {
+    let vals;
+    if (kind === 'site') vals = lookupValues('site', normCity(S.card.before.city));
+    else if (kind === 'channel') vals = lookupValues('channel', norm(S.card.before.sent_by));
+    else vals = lookupValues(kind);
+    out.push(`<datalist id="dl-${c}">${vals.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
+  }
+  return out.join('');
+}
+function renderCard() {
+  const c = S.card, rec = c.rec, isNew = c.id == null;
+  const title = isNew ? 'טיקט חדש' : 'טיקט ' + (rec.fdt || '');
+  const sub = !isNew && rec._v > 1 && rec._ua ? `עדכון אחרון: <bdi dir="ltr">${esc(localTime(rec._ua))}</bdi> · ${esc(userName(rec._ub))}` : '';
+  const groups = (isNew ? [['טיקט', ['fdt', 'entry_date']]] : []).concat(GROUPS.map(([g, cols]) => [g, isNew ? cols.filter(x => x !== 'entry_date') : cols]));
+  const extra = EXTRA.filter(x => !(isNew && (x === 'fdt')));
+  app().innerHTML = `<div class="screen">
+    <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
+    <div id="others"></div><div id="remote"></div>
+    ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
+    <div class="form">
+      ${groups.map(([g, cols]) => `<div class="sec">${g}</div><div class="box">${cols.map(fieldHtml).join('')}</div>`).join('')}
+      <button class="link" id="toggle">${c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`}</button>
+      <div id="extra" class="${c.extra ? '' : 'hidden'}"><div class="sec">שדות נוספים</div><div class="box">${extra.map(fieldHtml).join('')}</div></div>
+      ${datalists()}
+    </div>
+    <div class="bottom"><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
+  $('#back').onclick = closeCard;
+  if ($('#hist')) $('#hist').onclick = () => showHistory(c.id);
+  $('#toggle').onclick = () => { c.extra = !c.extra; $('#extra').classList.toggle('hidden', !c.extra); $('#toggle').textContent = c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`; };
+  $('#wa').onclick = whatsapp;
+  $('#save').onclick = save;
+  document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
+  document.querySelectorAll('[data-now]').forEach(b => b.onclick = () => { const el = inputOf(b.dataset.now); el.value = nowText(); onEdit(b.dataset.now); });
+  updateSave();
+  renderOthersBar();
+  window.scrollTo(0, 0);
+}
+const inputOf = c => document.querySelector(`[data-c="${c}"]`);
+function values() { const v = {}; for (const c of COLS) { const el = inputOf(c); v[c] = el ? norm(el.value) : S.card.before[c]; } return v; }
+function changedCols(v) { return COLS.filter(c => norm(v[c]) !== norm(S.card.before[c])); }
+function onEdit(col) {
+  const c = S.card;
+  if (col === 'city') { const dl = $('#dl-site'); if (dl) dl.innerHTML = lookupValues('site', normCity(inputOf('city').value)).map(v => `<option value="${esc(v)}">`).join(''); }
+  if (col === 'sent_by') { const dl = $('#dl-sent_group'); if (dl) dl.innerHTML = lookupValues('channel', norm(inputOf('sent_by').value)).map(v => `<option value="${esc(v)}">`).join(''); }
+  if (col === 'status') {                 // a closed status fills the close date (if empty)
+    const st = stClass({status: inputOf('status').value, close_date: ''});
+    const cd = inputOf('close_date');
+    if (st === 'done' && cd && !norm(cd.value)) { cd.value = nowText(); toast('תאריך סגירה מולא: ' + cd.value); }
+  }
+  if (DATE_COLS.has(col)) { const el = inputOf(col); el.classList.toggle('bad', !!norm(el.value) && !parseDate(el.value)); }
+  if (col === 'fdt') { const el = inputOf('fdt'); el.classList.toggle('bad', isDupFdt(el.value)); }
+  updateSave();
+  const dirty = changedCols(values()).length > 0;
+  if (dirty !== c.dirty) { c.dirty = dirty; track(); renderOthersBar(); }
+}
+function updateSave() {
+  const v = values(), ch = new Set(changedCols(v));
+  for (const c of COLS) { const f = $('#f-' + c); if (f) f.classList.toggle('changed', ch.has(c)); }
+  const b = $('#save');
+  if (b) { b.disabled = S.readonly || S.card.deleted || ch.size === 0; b.textContent = ch.size ? `שמור (${ch.size})` : 'שמור'; }
+}
+function isDupFdt(v) {
+  const k = norm(v).toLowerCase(), own = S.card.rec ? S.card.rec.fdt.toLowerCase() : null;
+  if (!k || k === own) return false;
+  for (const r of S.recs.values()) if (r.fdt.toLowerCase() === k) return true;
+  return false;
+}
+function renderOthersBar() {
+  const el = $('#others'); if (!el || !S.card || S.card.id == null) return;
+  const o = othersOn(S.card.id);
+  if (!o.length) { el.innerHTML = ''; return; }
+  const editing = o.filter(x => x[1]).map(x => x[0]), viewing = o.filter(x => !x[1]).map(x => x[0]);
+  let t = [];
+  if (editing.length) t.push('⚠ ' + editing.join(', ') + ' עורך/ת את הטיקט הזה כרגע');
+  if (viewing.length) t.push(viewing.join(', ') + ' צופה בטיקט הזה');
+  el.innerHTML = `<div class="banner ${editing.length ? 'warn' : 'info'}">${esc(t.join(' · '))}${editing.length && S.card.dirty ? '<br>בשמירה תתבקש לאשר אם אותם שדות השתנו.' : ''}</div>`;
+}
+function remoteUpdate(rec) {
+  const c = S.card;
+  if (!rec || !c.rec || rec._v <= c.rec._v) return;
+  const diff = COLS.filter(x => !same(rec[x], c.rec[x]));
+  const who = userName(rec._ub);
+  if (!diff.length) { c.rec = {...rec}; return; }
+  if (!c.dirty) {
+    c.rec = {...rec}; c.before = Object.fromEntries(COLS.map(x => [x, rec[x]]));
+    renderCard();
+    $('#remote').innerHTML = `<div class="banner info">ℹ ${esc(who)} עדכן/ה את הטיקט. הכרטיס רוענן: ${esc(diff.map(x => LABEL[x]).join(', '))}</div>`;
+  } else {
+    c.remote = rec;
+    $('#remote').innerHTML = `<div class="banner orange">⚠ ${esc(who)} שמר/ה שינויים בזמן שערכת: ${esc(diff.map(x => LABEL[x]).join(', '))}<br><button id="loadr">טען ערכים חדשים</button></div>`;
+    $('#loadr').onclick = async () => {
+      if (!await ask('טעינת ערכים', 'השינויים שלך בכרטיס יימחקו ויוצגו הערכים מהשרת. להמשיך?')) return;
+      c.rec = {...c.remote}; c.before = Object.fromEntries(COLS.map(x => [x, c.remote[x]])); c.dirty = false; renderCard(); track();
+    };
+  }
+}
+function remoteDeleted() {
+  S.card.deleted = true;
+  $('#remote').innerHTML = '<div class="banner warn">⚠ הטיקט נמחק על ידי משתמש אחר. אי אפשר לשמור בו שינויים.</div>';
+  updateSave();
+}
+async function closeCard() {
+  if (S.card && S.card.dirty && !S.readonly && !await ask('שינויים לא נשמרו', 'לסגור את הכרטיס בלי לשמור?', 'סגור בלי לשמור', 'המשך לערוך', true)) return;
+  renderList();
+}
+
+async function save() {
+  const c = S.card, v = values(), changed = changedCols(v);
+  if (!changed.length || S.readonly) return;
+  if (!norm(v.fdt)) return info('חסר נתון', "יש להזין מס' טיקט FDT.");
+  if (isDupFdt(v.fdt)) return info('טיקט קיים', "מס' טיקט FDT כבר קיים בטיקט אחר.");
+  const bad = COLS.filter(x => DATE_COLS.has(x) && norm(v[x]) && !parseDate(v[x]));
+  if (bad.length) return info('תאריך שגוי', 'תאריך לא תקין: ' + bad.map(x => LABEL[x]).join(', ') + '\nהפורמט: dd/mm/yyyy או dd/mm/yyyy HH:MM');
+  const btn = $('#save'); btn.disabled = true; btn.textContent = 'שומר...';
+  try {
+    if (c.id == null) {
+      const row = await S.cloud.insertTicket(recToDb(v, COLS));
+      applyRow(row);
+      toast('הטיקט החדש נשמר');
+      c.dirty = false; renderList(); return;
+    }
+    const res = await saveChanges(c, v, changed);
+    if (!res) { updateSave(); return; }
+    toast(res.merged.length ? `נשמר. בינתיים ${res.merged.join(', ')} שינה/תה שדות אחרים — שני השינויים נשמרו.` : 'נשמר', 3500);
+    c.dirty = false; renderList();
+  } catch (e) {
+    updateSave();
+    if (e instanceof DupError) return info('טיקט קיים', "מס' טיקט FDT כבר קיים בשרת.");
+    if (e && e.deleted) { remoteDeleted(); return info('שמירה', 'הטיקט נמחק על ידי משתמש אחר — השינויים לא נשמרו.'); }
+    if (e instanceof AuthError) return sessionEnded();
+    return info('השמירה נכשלה', errText(e) + '\nהכרטיס נשאר פתוח — אפשר לנסות שוב.');
+  }
+}
+async function saveChanges(c, after, changed) {
+  const body = recToDb(after, changed), before = c.before, merged = [];
+  let version = c.rec._v, forced = false;
+  for (let i = 0; i < 5; i++) {
+    const row = await S.cloud.updateTicket(c.id, version, body);
+    if (row) { applyRow(row); return {merged}; }
+    const curRow = await S.cloud.getTicket(c.id);
+    if (!curRow) { const e = new Error('deleted'); e.deleted = true; throw e; }
+    const cur = dbToRec(curRow);
+    const conflicts = changed.filter(x => !same(cur[x], before[x]) && !same(cur[x], after[x]));
+    if (conflicts.length && !forced) {
+      const det = conflicts.map(x => `• ${LABEL[x]}: עכשיו בשרת «${cur[x] || '—'}»`).join('\n');
+      if (!await ask('שינוי מקביל', `${userName(cur._ub)} שינה/תה את אותם שדות:\n${det}\n\nלדרוס עם הערכים שלך?`, 'דרוס', 'ביטול', true)) { applyRow(curRow); return null; }
+      forced = true;
+    } else if (!conflicts.length) { const n = userName(cur._ub); if (!merged.includes(n)) merged.push(n); }
+    version = cur._v;
+  }
+  throw new CloudError('השרת עסוק — נסה שוב.');
+}
+function applyRow(row) {
+  const r = dbToRec(row), cur = S.recs.get(r.id);
+  if (!cur || cur._v <= r._v) { S.recs.set(r.id, r); S.raw.set(r.id, row); }
+  saveCache();
+}
+
+// ───────────── WhatsApp / history / settings ─────────────
+function message(v) { return COLS.filter(c => norm(v[c])).map(c => `${LABEL[c]}: ${norm(v[c])}`).join('\n'); }
+function whatsapp() {
+  const msg = message(values());
+  const s = sheet(`<h3>הודעה ל-WhatsApp</h3><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
+    <div class="btns"><button class="btn wa" id="wasend">שלח</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
+  s.querySelector('#wasend').onclick = () => { const t = $('#wamsg').value.trim(); if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank'); closeSheet(); };
+  s.querySelector('#wacopy').onclick = async () => { try { await navigator.clipboard.writeText($('#wamsg').value.trim()); toast('הטקסט הועתק'); } catch { $('#wamsg').select(); document.execCommand('copy'); toast('הטקסט הועתק'); } };
+  s.querySelector('#waclose').onclick = closeSheet;
+}
+async function showHistory(id) {
+  if (S.readonly) return info('היסטוריה', 'לא זמין במצב לא מקוון.');
+  let entries;
+  try { entries = await S.cloud.ticketHistory(id); } catch (e) { return info('היסטוריה', errText(e)); }
+  const act = {insert: 'נוצר', update: 'שונה', delete: 'נמחק'};
+  const val = (row, c) => DATE_COLS.has(c) ? serverDateText((row || {})[c]) : norm((row || {})[c]);
+  const html = entries.length ? entries.map(e => `<div class="hist"><b><bdi dir="ltr">${esc(localTime(e.at))}</bdi> · ${esc(userName(e.by_user))} · ${act[e.action] || e.action}</b>
+    ${(e.action === 'update' ? (e.changed || []).filter(c => LABEL[c]).map(c => `<div>${esc(LABEL[c])}: ${esc(val(e.old_row, c) || '—')} ← ${esc(val(e.new_row, c) || '—')}</div>`).join('') : '')}</div>`).join('')
+    : '<p>אין רישומים ביומן.</p>';
+  const s = sheet(`<h3>היסטוריה</h3>${html}<div class="btns"><button class="btn" id="hclose">סגור</button></div>`);
+  s.querySelector('#hclose').onclick = closeSheet;
+}
+function settings() {
+  const email = S.cloud.user.email || S.session.email || '';
+  const s = sheet(`<div class="set"><h3>הגדרות</h3>
+    <p><b>${esc(myName())}</b> (${esc(email)})</p><p>תפקיד: ${S.role === 'admin' ? 'מנהל' : 'משתמש'}</p>
+    <p>מצב: ${S.readonly ? 'לא מקוון — קריאה בלבד' : 'מחובר'}</p><p>גרסה: ${APP_VERSION}</p>
+    <p style="color:#6b7785">הוספה למסך הבית: iPhone (Safari) — שיתוף ← "הוסף למסך הבית". Android (Chrome) — תפריט ⋮ ← "התקן אפליקציה" / "הוסף למסך הבית".<br>
+    ניהול משתמשים והרשאות — בתוכנית במחשב (⚙ הגדרות ← משתמשים).</p>
+    <div class="btns"><button class="btn" id="spw" ${S.readonly ? 'disabled' : ''}>שנה סיסמה</button><button class="btn red" id="sout">התנתק</button></div>
+    <div class="btns"><button class="btn" id="sclose">סגור</button></div></div>`);
+  s.querySelector('#sclose').onclick = closeSheet;
+  s.querySelector('#sout').onclick = async () => {
+    closeSheet();
+    if (!await ask('התנתקות', 'להתנתק? בכניסה הבאה תצטרך להזין דוא"ל וסיסמה.', 'התנתק', 'ביטול', true)) return;
+    if (S.rt) S.rt.stop();
+    clearInterval(S.pollTimer); clearInterval(S.tokTimer);
+    await S.cloud.signOut();
+    S.session.rt = ''; saveSession(S.session);
+    renderLogin('');
+  };
+  s.querySelector('#spw').onclick = () => {
+    const p = sheet(`<h3>שינוי סיסמה</h3><input id="p1" class="inp" type="password" placeholder="סיסמה חדשה (לפחות 8 תווים)" autocomplete="new-password">
+      <input id="p2" class="inp" type="password" placeholder="שוב את הסיסמה החדשה" style="margin-top:8px" autocomplete="new-password">
+      <div class="err" id="perr"></div><div class="btns"><button class="btn dark" id="pok">שמור</button><button class="btn" id="pno">ביטול</button></div>`);
+    p.querySelector('#pno').onclick = closeSheet;
+    p.querySelector('#pok').onclick = async () => {
+      const a = $('#p1').value, b = $('#p2').value;
+      if (a.length < 8) { $('#perr').textContent = 'לפחות 8 תווים.'; return; }
+      if (a !== b) { $('#perr').textContent = 'הסיסמאות אינן זהות.'; return; }
+      try { await S.cloud.changePassword(a); closeSheet(); toast('הסיסמה שונתה'); } catch (e) { $('#perr').textContent = errText(e); }
+    };
+  };
+}
+
+window.addEventListener('popstate', () => { if (S.view === 'card') closeCard(); });
+start();
