@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.1.2';
+const APP_VERSION = 'mobile 1.2';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -14,6 +14,7 @@ const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'
 const COLS = F.map(x => x[0]);
 const LABEL = Object.fromEntries(F);
 const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date']);
+const DATE_ONLY = new Set(['escalation_date']);      // date without time
 const MULTI = new Set(['infrastructure', 'solution', 'notes']);
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status'};
@@ -588,8 +589,8 @@ function fieldHtml(c) {
   const list = LOOKUP[c] ? `list="dl-${c}"` : '';
   const ltr = DATE_COLS.has(c) || c === 'fdt' || c === 'house' || c === 'cabinet' ? 'ltr' : '';
   const input = MULTI.has(c) ? `<textarea data-c="${c}" ${ro} rows="2">${esc(v)}</textarea>`
-    : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? 'inputmode="numeric" placeholder="dd/mm/yyyy HH:MM"' : ''} autocomplete="off">`;
-  const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך ושעה">📅<input type="datetime-local" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">עכשיו</button>` : '';
+    : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? `inputmode="numeric" placeholder="${DATE_ONLY.has(c) ? 'dd/mm/yyyy' : 'dd/mm/yyyy HH:MM'}"` : ''} autocomplete="off">`;
+  const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}" id="f-${c}"><label>${esc(LABEL[c])}</label>${input}${now}</div>`;
 }
 function datalists() {
@@ -607,38 +608,38 @@ function renderCard() {
   const c = S.card, rec = c.rec, isNew = c.id == null;
   const title = isNew ? 'טיקט חדש' : 'טיקט ' + (rec.fdt || '');
   const sub = !isNew && rec._v > 1 && rec._ua ? `עדכון אחרון: <bdi dir="ltr">${esc(localTime(rec._ua))}</bdi> · ${esc(userName(rec._ub))}` : '';
-  const groups = (isNew ? [['טיקט', ['fdt', 'entry_date']]] : []).concat(GROUPS.map(([g, cols]) => [g, isNew ? cols.filter(x => x !== 'entry_date') : cols]));
-  const extra = EXTRA.filter(x => !(isNew && (x === 'fdt')));
+  const groups = isNew ? [['כל השדות', COLS]] : GROUPS;    // new ticket: same order as the table / desktop card
+  const extra = EXTRA;
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
     <div id="others"></div><div id="remote"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
       ${groups.map(([g, cols]) => `<div class="sec">${g}</div><div class="box">${cols.map(fieldHtml).join('')}</div>`).join('')}
-      <button class="link" id="toggle">${c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`}</button>
-      <div id="extra" class="${c.extra ? '' : 'hidden'}"><div class="sec">שדות נוספים</div><div class="box">${extra.map(fieldHtml).join('')}</div></div>
+      ${isNew ? '' : `<button class="link" id="toggle">${c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`}</button>
+      <div id="extra" class="${c.extra ? '' : 'hidden'}"><div class="sec">שדות נוספים</div><div class="box">${extra.map(fieldHtml).join('')}</div></div>`}
       ${datalists()}
     </div>
     <div class="bottom"><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
   $('#back').onclick = closeCard;
   if ($('#hist')) $('#hist').onclick = () => showHistory(c.id);
-  $('#toggle').onclick = () => { c.extra = !c.extra; $('#extra').classList.toggle('hidden', !c.extra); $('#toggle').textContent = c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`; };
+  if ($('#toggle')) $('#toggle').onclick = () => { c.extra = !c.extra; $('#extra').classList.toggle('hidden', !c.extra); $('#toggle').textContent = c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`; };
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
   document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
-    const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, 16); };
+    const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
     p.addEventListener('pointerdown', prime);
     p.addEventListener('focus', prime);
     p.addEventListener('change', () => {          // native calendar + clock of the phone
-      const m = p.value.match(/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)/);
+      const m = p.value.match(/^(\d{4})-(\d\d)-(\d\d)(?:T(\d\d):(\d\d))?/);
       if (!m) return;
-      inputOf(col).value = `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}`;
+      inputOf(col).value = `${m[3]}/${m[2]}/${m[1]}` + (m[4] && !DATE_ONLY.has(col) ? ` ${m[4]}:${m[5]}` : '');
       onEdit(col);
     });
   });
-  document.querySelectorAll('[data-now]').forEach(b => b.onclick = () => { const el = inputOf(b.dataset.now); el.value = nowText(); onEdit(b.dataset.now); });
+  document.querySelectorAll('[data-now]').forEach(b => b.onclick = () => { const el = inputOf(b.dataset.now); el.value = DATE_ONLY.has(b.dataset.now) ? nowText().slice(0, 10) : nowText(); onEdit(b.dataset.now); });
   updateSave();
   renderOthersBar();
   window.scrollTo(0, 0);
