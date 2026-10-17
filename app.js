@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.0';
+const APP_VERSION = 'mobile 1.1';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -589,8 +589,8 @@ function fieldHtml(c) {
   const ltr = DATE_COLS.has(c) || c === 'fdt' || c === 'house' || c === 'cabinet' ? 'ltr' : '';
   const input = MULTI.has(c) ? `<textarea data-c="${c}" ${ro} rows="2">${esc(v)}</textarea>`
     : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? 'inputmode="numeric" placeholder="dd/mm/yyyy HH:MM"' : ''} autocomplete="off">`;
-  const now = DATE_COLS.has(c) && !S.readonly ? `<button class="now" data-now="${c}">עכשיו</button>` : '';
-  return `<div class="f" id="f-${c}"><label>${esc(LABEL[c])}</label>${input}${now}</div>`;
+  const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך ושעה">📅<input type="datetime-local" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">עכשיו</button>` : '';
+  return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}" id="f-${c}"><label>${esc(LABEL[c])}</label>${input}${now}</div>`;
 }
 function datalists() {
   const out = [];
@@ -626,6 +626,18 @@ function renderCard() {
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
   document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
+  document.querySelectorAll('[data-pick]').forEach(p => {
+    const col = p.dataset.pick;
+    const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, 16); };
+    p.addEventListener('pointerdown', prime);
+    p.addEventListener('focus', prime);
+    p.addEventListener('change', () => {          // native calendar + clock of the phone
+      const m = p.value.match(/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)/);
+      if (!m) return;
+      inputOf(col).value = `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}`;
+      onEdit(col);
+    });
+  });
   document.querySelectorAll('[data-now]').forEach(b => b.onclick = () => { const el = inputOf(b.dataset.now); el.value = nowText(); onEdit(b.dataset.now); });
   updateSave();
   renderOthersBar();
