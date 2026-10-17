@@ -1,5 +1,5 @@
 // Ticket Monitor mobile: keeps the app itself available offline. Data never goes through here (it lives in IndexedDB).
-const CACHE = 'tm-shell-1.3';
+const CACHE = 'tm-shell-1.4';
 const SHELL = ['./', 'index.html', 'style.css', 'config.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

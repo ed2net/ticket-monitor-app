@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.3';
+const APP_VERSION = 'mobile 1.4';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -160,9 +160,12 @@ class Cloud {
   }
   loadTickets() { return this.fetchAll('tickets', 'select=' + SEL + '&order=id'); }
   loadLookups() { return this.fetchAll('lookups', 'select=id,kind,value,parent,active&order=kind,value'); }
-  async loadProfiles() {
-    try { return await this.fetchAll('profiles', 'select=id,display_name,role,can_edit_lookups'); }
-    catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; return this.fetchAll('profiles', 'select=id,display_name,role'); }
+  async loadProfiles() {          // wa_unchecked = WhatsApp fields without V (chosen in the desktop card, SQL 10.8)
+    for (const cols of ['id,display_name,role,can_edit_lookups,wa_unchecked', 'id,display_name,role,can_edit_lookups']) {
+      try { return await this.fetchAll('profiles', 'select=' + cols); }
+      catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; }
+    }
+    return this.fetchAll('profiles', 'select=id,display_name,role');
   }
   async lastLogTime() { const r = await this.req('GET', '/rest/v1/ticket_log?select=at&order=at.desc&limit=1'); return r && r[0] ? r[0].at : ''; }
   async changesSince(tm, lm) {
@@ -390,7 +393,7 @@ async function enterOnline() {
 }
 function enterOffline(cache) {
   S.readonly = true; S.view = 'list'; S.cacheAt = cache.saved_text || '';
-  S.names = cache.names || {}; S.lookups = cache.lookups || [];
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || [];
   S.recs = new Map((cache.rows || []).map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
   S.loaded = true;
   renderList();
@@ -413,13 +416,14 @@ function setProfiles(ps) {
   S.names = Object.fromEntries(ps.map(p => [p.id, (p.display_name || '').trim()]));
   const me = ps.find(p => p.id === S.cloud.user.id) || {};
   S.role = me.role || 'user';
+  S.waOff = Array.isArray(me.wa_unchecked) ? me.wa_unchecked : [];
 }
 let cacheTimer = null;
 function saveCache() {
   clearTimeout(cacheTimer);
   cacheTimer = setTimeout(() => {
     if (S.readonly || !S.loaded) return;
-    kv.set('cache', {saved_text: nowText(), names: S.names, lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
+    kv.set('cache', {saved_text: nowText(), names: S.names, waOff: S.waOff || [], lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
   }, 3000);
 }
 function startLive() {
@@ -759,10 +763,13 @@ function applyRow(row) {
 }
 
 // ───────────── WhatsApp / history / settings ─────────────
-function message(v) { return COLS.filter(c => norm(v[c])).map(c => `${LABEL[c]}: ${norm(v[c])}`).join('\n'); }
-function whatsapp() {
+function message(v) {             // same as the desktop: only fields with V (choice kept in the cloud), table order
+  const off = new Set(S.waOff || []);
+  return COLS.filter(c => norm(v[c]) && !off.has(LABEL[c])).map(c => `${LABEL[c]}: ${norm(v[c])}`).join('\n'); }
+async function whatsapp() {
+  if (!S.readonly) { try { setProfiles(await S.cloud.loadProfiles()); saveCache(); } catch {} }   // newest V choice
   const msg = message(values());
-  const s = sheet(`<h3>הודעה ל-WhatsApp</h3><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
+  const s = sheet(`<h3>הודעה ל-WhatsApp</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות לפי סימוני V בכרטיס בתוכנית במחשב.</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
     <div class="btns"><button class="btn wa" id="wasend">שלח</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
   s.querySelector('#wasend').onclick = () => { const t = $('#wamsg').value.trim(); if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank'); closeSheet(); };
   s.querySelector('#wacopy').onclick = async () => { try { await navigator.clipboard.writeText($('#wamsg').value.trim()); toast('הטקסט הועתק'); } catch { $('#wamsg').select(); document.execCommand('copy'); toast('הטקסט הועתק'); } };
