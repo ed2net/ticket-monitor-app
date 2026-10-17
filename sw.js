@@ -1,5 +1,7 @@
-// Ticket Monitor mobile: keeps the app itself available offline. Data never goes through here (it lives in IndexedDB).
-const CACHE = 'tm-shell-1.4.1';
+// Ticket Monitor mobile: the app itself opens at once from the phone (data lives in IndexedDB, not here).
+// Stale-while-revalidate: the saved copy is shown immediately, a newer version is fetched in the background
+// and is used from the next start.
+const CACHE = 'tm-shell-1.5';
 const SHELL = ['./', 'index.html', 'style.css', 'config.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
@@ -8,9 +10,11 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
   if (e.request.method !== 'GET' || u.origin !== self.location.origin || /\/(rest|auth|realtime)\/v1\//.test(u.pathname)) return;
-  // network first (new version right away), cache when offline
-  e.respondWith(fetch(e.request, {cache: 'no-cache'}).then(r => {   // always ask the server (GitHub Pages caches 10 min)
-    if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
-    return r;
-  }).catch(() => caches.match(e.request, {ignoreSearch: true}).then(r => r || caches.match('index.html'))));
+  e.respondWith(caches.open(CACHE).then(async cache => {
+    const hit = await cache.match(e.request);
+    const net = fetch(e.request, {cache: 'no-cache'}).then(r => { if (r.ok) cache.put(e.request, r.clone()); return r; });
+    if (hit) { e.waitUntil(net.catch(() => {})); return hit; }
+    try { return await net; }
+    catch { return (await cache.match(e.request, {ignoreSearch: true})) || (await cache.match('index.html')) || Response.error(); }
+  }));
 });

@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.4.1';
+const APP_VERSION = 'mobile 1.5';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -334,9 +334,11 @@ function lookupValues(kind, parent) {
 // ───────────── start ─────────────
 async function start() {
   if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(r => r.update()).catch(() => {}); } catch {} }
-  S.cloud.onSession = () => { if (S.session.remember) { S.session.rt = S.cloud.rt; saveSession(S.session); } };
+  S.cloud.onSession = () => { if (S.session.remember) { S.session.rt = S.cloud.rt; S.session.uid = S.cloud.user.id || S.session.uid; saveSession(S.session); } };
   if (S.session.remember && S.session.rt) {
     S.cloud.rt = S.session.rt;
+    const cache = await kv.get('cache');
+    if (usableCache(cache)) return quickStart(cache);    // instant: last data at once, connect + catch up in the background
     renderLoading('מתחבר...');
     try { await S.cloud.refresh(); return enterOnline(); }
     catch (e) {
@@ -369,7 +371,7 @@ async function renderLogin(msg) {
     $('#go').disabled = true; $('#err').textContent = 'מתחבר...';
     try { await S.cloud.signIn(email, pw); }
     catch (e) { $('#go').disabled = false; $('#err').textContent = e instanceof AuthError ? e.message : errText(e); return; }
-    S.session = {email, remember: $('#rem').checked, rt: $('#rem').checked ? S.cloud.rt : ''};
+    S.session = {email, uid: S.cloud.user.id || '', remember: $('#rem').checked, rt: $('#rem').checked ? S.cloud.rt : ''};
     saveSession(S.session);
     enterOnline();
   };
@@ -379,6 +381,40 @@ async function renderLogin(msg) {
 }
 
 // ───────────── online / offline ─────────────
+// ───────────── fast start: show the saved copy at once, then only the changes are downloaded ─────────────
+function usableCache(c) { return !!(c && c.uid && c.uid === S.session.uid && c.tm && c.lm && Array.isArray(c.rows)); }
+function loadFromCache(cache) {
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.role = cache.role || 'user';
+  S.raw = new Map((cache.rows || []).map(r => [+r.id, r]));
+  S.recs = new Map([...S.raw.values()].map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
+  S.tm = cache.tm || ''; S.lm = cache.lm || ''; S.cacheAt = cache.saved_text || '';
+  S.cloud.user = {id: cache.uid, email: S.session.email || ''};
+  S.loaded = true;
+}
+function quickStart(cache) {
+  loadFromCache(cache);
+  S.readonly = false; S.connecting = true; S.restOk = true; S.view = 'list';
+  renderList();
+  connectInBackground(cache);
+}
+async function connectInBackground(cache) {
+  try { await S.cloud.refresh(); }
+  catch (e) {
+    S.connecting = false;
+    if (e instanceof OfflineError) { enterOffline(cache); return; }
+    S.session.rt = ''; saveSession(S.session);
+    return renderLogin('הכניסה הקודמת הסתיימה — יש להתחבר מחדש.');
+  }
+  S.connecting = false;
+  startLive();
+  await sync();                                       // only what changed since the saved copy
+  try { setProfiles(await S.cloud.loadProfiles()); await loadWaSetting(); await reloadLookups(); saveCache(); } catch {}
+  if (S.view === 'list') renderListBody();
+  if (Date.now() - (cache.at || 0) > 24 * 3600 * 1000) {   // old copy: full reload in the background (safety net)
+    try { await fullLoad(); onDataChanged([], []); } catch {}
+  }
+}
+
 async function enterOnline() {
   S.readonly = false; S.view = 'list';
   renderLoading('טוען טיקטים...');
@@ -428,7 +464,8 @@ function saveCache() {
   clearTimeout(cacheTimer);
   cacheTimer = setTimeout(() => {
     if (S.readonly || !S.loaded) return;
-    kv.set('cache', {saved_text: nowText(), names: S.names, waOff: S.waOff || [], lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
+    kv.set('cache', {saved_text: nowText(), at: Date.now(), uid: S.cloud.user.id || '', role: S.role, tm: S.tm, lm: S.lm,
+      names: S.names, waOff: S.waOff || [], lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
   }, 3000);
 }
 function startLive() {
@@ -513,6 +550,7 @@ function othersOn(id) {
 }
 function pillHtml() {
   if (S.readonly) return `<div class="pill ro"><i></i><span>לא מקוון — קריאה בלבד</span></div>`;
+  if (S.connecting) return `<div class="pill ro"><i></i><span>מתחבר…</span></div>`;
   if (!S.restOk) return `<div class="pill off"><i></i><span>אין חיבור לשרת</span></div>`;
   if (!S.rtOnline) return `<div class="pill poll"><i></i><span>מחובר · עדכון חי לא פעיל</span></div>`;
   const users = {};
@@ -545,7 +583,7 @@ function renderList() {
   $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
   document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = b.dataset.chip; S.limit = 60; renderList(); });
   if ($('#new')) $('#new').onclick = () => openCard(null);
-  if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(enterOnline).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('')); } else renderLogin(''); };
+  if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(() => kv.get('cache')).then(c => usableCache(c) ? quickStart(c) : enterOnline()).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('')); } else renderLogin(''); };
   renderListBody();
 }
 function filtered() {
