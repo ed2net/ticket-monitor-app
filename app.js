@@ -160,12 +160,13 @@ class Cloud {
   }
   loadTickets() { return this.fetchAll('tickets', 'select=' + SEL + '&order=id'); }
   loadLookups() { return this.fetchAll('lookups', 'select=id,kind,value,parent,active&order=kind,value'); }
-  async loadProfiles() {          // wa_unchecked = WhatsApp fields without V (chosen in the desktop card, SQL 10.8)
-    for (const cols of ['id,display_name,role,can_edit_lookups,wa_unchecked', 'id,display_name,role,can_edit_lookups']) {
-      try { return await this.fetchAll('profiles', 'select=' + cols); }
-      catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; }
-    }
-    return this.fetchAll('profiles', 'select=id,display_name,role');
+  async loadProfiles() {
+    try { return await this.fetchAll('profiles', 'select=id,display_name,role,can_edit_lookups'); }
+    catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; return this.fetchAll('profiles', 'select=id,display_name,role'); }
+  }
+  async loadSetting(key) {        // shared setting chosen by the admin (table app_settings, SQL 10.8); null = none
+    try { const r = await this.req('GET', `/rest/v1/app_settings?select=value&key=eq.${encodeURIComponent(key)}`); return r && r[0] ? r[0].value : null; }
+    catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; return null; }
   }
   async lastLogTime() { const r = await this.req('GET', '/rest/v1/ticket_log?select=at&order=at.desc&limit=1'); return r && r[0] ? r[0].at : ''; }
   async changesSince(tm, lm) {
@@ -401,6 +402,7 @@ function enterOffline(cache) {
 async function fullLoad() {
   const c = S.cloud;
   const [tickets, lookups, profiles, logtime] = await Promise.all([c.loadTickets(), c.loadLookups(), c.loadProfiles(), c.lastLogTime()]);
+  try { await loadWaSetting(); } catch {}
   setProfiles(profiles);
   S.recs = new Map();
   S.raw = new Map();
@@ -416,7 +418,10 @@ function setProfiles(ps) {
   S.names = Object.fromEntries(ps.map(p => [p.id, (p.display_name || '').trim()]));
   const me = ps.find(p => p.id === S.cloud.user.id) || {};
   S.role = me.role || 'user';
-  S.waOff = Array.isArray(me.wa_unchecked) ? me.wa_unchecked : [];
+}
+async function loadWaSetting() {  // WhatsApp fields without V — chosen by the admin in the desktop card, same for everybody
+  const v = await S.cloud.loadSetting('wa_unchecked');
+  if (Array.isArray(v)) S.waOff = v;
 }
 let cacheTimer = null;
 function saveCache() {
@@ -763,13 +768,13 @@ function applyRow(row) {
 }
 
 // ───────────── WhatsApp / history / settings ─────────────
-function message(v) {             // same as the desktop: only fields with V (choice kept in the cloud), table order
+function message(v) {             // same as the desktop: only fields with V (admin's choice), table order
   const off = new Set(S.waOff || []);
   return COLS.filter(c => norm(v[c]) && !off.has(LABEL[c])).map(c => `${LABEL[c]}: ${norm(v[c])}`).join('\n'); }
 async function whatsapp() {
-  if (!S.readonly) { try { setProfiles(await S.cloud.loadProfiles()); saveCache(); } catch {} }   // newest V choice
+  if (!S.readonly) { try { await loadWaSetting(); saveCache(); } catch {} }   // newest choice of the admin
   const msg = message(values());
-  const s = sheet(`<h3>הודעה ל-WhatsApp</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות לפי סימוני V בכרטיס בתוכנית במחשב.</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
+  const s = sheet(`<h3>הודעה ל-WhatsApp</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
     <div class="btns"><button class="btn wa" id="wasend">שלח</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
   s.querySelector('#wasend').onclick = () => { const t = $('#wamsg').value.trim(); if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank'); closeSheet(); };
   s.querySelector('#wacopy').onclick = async () => { try { await navigator.clipboard.writeText($('#wamsg').value.trim()); toast('הטקסט הועתק'); } catch { $('#wamsg').select(); document.execCommand('copy'); toast('הטקסט הועתק'); } };
