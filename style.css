@@ -94,3 +94,12 @@ input,select,textarea{font:inherit;color:var(--ink)}
 .loading{padding:40px;text-align:center;color:var(--quiet)}
 .set p{font-size:14px;margin:6px 0}
 .box.first{margin-top:10px}
+
+.f textarea[data-big]{cursor:pointer}
+.bigedit{position:fixed;inset:0;background:rgba(20,24,28,.45);z-index:40}
+.bigpanel{position:absolute;top:0;left:0;right:0;background:#fff;padding:calc(10px + env(safe-area-inset-top)) 12px 12px;border-radius:0 0 18px 18px;box-shadow:0 4px 18px rgba(0,0,0,.25)}
+.bighead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:17px}
+.bighead span{font-size:13px;color:var(--quiet)}
+.bigpanel textarea{width:100%;height:42vh;border:1px solid #7fa9cf;border-radius:12px;padding:10px;font-size:17px;line-height:1.45;resize:none;background:#fff}
+.bigbtns{display:flex;gap:8px;margin-top:10px}
+body.noscroll{overflow:hidden}

@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.5.1';
+const APP_VERSION = 'mobile 1.6';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -632,7 +632,7 @@ function fieldHtml(c) {
   const ro = S.readonly ? 'readonly' : '';
   const list = LOOKUP[c] ? `list="dl-${c}"` : '';
   const ltr = DATE_COLS.has(c) || c === 'fdt' || c === 'house' || c === 'cabinet' ? 'ltr' : '';
-  const input = MULTI.has(c) ? `<textarea data-c="${c}" ${ro} rows="2">${esc(v)}</textarea>`
+  const input = MULTI.has(c) ? `<textarea data-c="${c}" data-big="${c}" readonly rows="2" placeholder="${S.readonly ? '' : 'לחץ לכתיבה…'}">${esc(v)}</textarea>`
     : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? `inputmode="numeric" placeholder="${DATE_ONLY.has(c) ? 'dd/mm/yyyy' : 'dd/mm/yyyy HH:MM'}"` : ''} autocomplete="off">`;
   const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}" id="f-${c}"><label>${esc(LABEL[c])}</label>${input}${now}</div>`;
@@ -667,6 +667,7 @@ function renderCard() {
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
   document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
+  document.querySelectorAll('[data-big]').forEach(el => el.addEventListener('click', () => openTextEditor(el.dataset.big)));
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
     const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
@@ -758,6 +759,38 @@ function remoteDeleted() {
 async function closeCard() {
   if (S.card && S.card.dirty && !S.readonly && !await ask('שינויים לא נשמרו', 'לסגור את הכרטיס בלי לשמור?', 'סגור בלי לשמור', 'המשך לערוך', true)) return;
   renderList();
+}
+
+// ───────────── big editor for תשתית / פתרון / הערות: half a screen to type, one tap to save ─────────────
+function openTextEditor(col) {
+  const el = inputOf(col);
+  if (!el || $('#bigedit')) return;
+  const ro = S.readonly || (S.card && S.card.deleted);
+  const isNew = S.card && S.card.id == null;
+  const ov = document.createElement('div');
+  ov.id = 'bigedit';
+  ov.className = 'bigedit';
+  ov.innerHTML = `<div class="bigpanel">
+      <div class="bighead"><b>${esc(LABEL[col])}</b><span>${esc(S.card && S.card.rec ? 'טיקט ' + S.card.rec.fdt : 'טיקט חדש')}</span></div>
+      <textarea id="bigtext" dir="rtl" ${ro ? 'readonly' : ''}>${esc(el.value)}</textarea>
+      <div class="bigbtns">${ro ? '' : `<button class="btn save" id="bigsave">${isNew ? 'אישור' : 'שמור'}</button>`}<button class="btn" id="bigcancel">${ro ? 'סגור' : 'ביטול'}</button></div>
+    </div>`;
+  document.body.appendChild(ov);
+  document.body.classList.add('noscroll');
+  const ta = $('#bigtext');
+  const close = () => { ov.remove(); document.body.classList.remove('noscroll'); };
+  $('#bigcancel').onclick = close;
+  ov.addEventListener('click', e => { if (e.target === ov) close(); });
+  if (!ro) {
+    setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+    $('#bigsave').onclick = () => {
+      el.value = ta.value.replace(/\s+$/, '');
+      close();
+      onEdit(col);
+      if (isNew) { toast('נוסף לכרטיס — לחץ "שמור" לשמירת הטיקט'); return; }
+      if (changedCols(values()).length) save();           // existing ticket: saved at once
+    };
+  }
 }
 
 async function save() {
