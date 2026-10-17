@@ -93,3 +93,4 @@ input,select,textarea{font:inherit;color:var(--ink)}
 .toast{position:fixed;bottom:calc(90px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:#1f2933;color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;z-index:30;max-width:90%}
 .loading{padding:40px;text-align:center;color:var(--quiet)}
 .set p{font-size:14px;margin:6px 0}
+.box.first{margin-top:10px}

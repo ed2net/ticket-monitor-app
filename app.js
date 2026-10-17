@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.2';
+const APP_VERSION = 'mobile 1.3';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -18,9 +18,6 @@ const DATE_ONLY = new Set(['escalation_date']);      // date without time
 const MULTI = new Set(['infrastructure', 'solution', 'notes']);
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status'};
-const GROUPS = [['מיקום', ['city', 'site', 'street', 'house', 'entrance', 'cabinet']],
-  ['תקלה', ['fault', 'contractor', 'status', 'entry_date']], ['טיפול', ['solution', 'notes']]];
-const EXTRA = ['fdt', 'sent_by', 'sent_group', 'work_type', 'escalation_date', 'close_type', 'infrastructure', 'close_date'];
 const SEL = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'].concat(COLS).join(',');
 const DONE_WORDS = ['finish', 'סגור', 'נסגר', 'בוצע', 'done', 'closed'];
 
@@ -608,22 +605,18 @@ function renderCard() {
   const c = S.card, rec = c.rec, isNew = c.id == null;
   const title = isNew ? 'טיקט חדש' : 'טיקט ' + (rec.fdt || '');
   const sub = !isNew && rec._v > 1 && rec._ua ? `עדכון אחרון: <bdi dir="ltr">${esc(localTime(rec._ua))}</bdi> · ${esc(userName(rec._ub))}` : '';
-  const groups = isNew ? [['כל השדות', COLS]] : GROUPS;    // new ticket: same order as the table / desktop card
-  const extra = EXTRA;
+
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
     <div id="others"></div><div id="remote"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
-      ${groups.map(([g, cols]) => `<div class="sec">${g}</div><div class="box">${cols.map(fieldHtml).join('')}</div>`).join('')}
-      ${isNew ? '' : `<button class="link" id="toggle">${c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`}</button>
-      <div id="extra" class="${c.extra ? '' : 'hidden'}"><div class="sec">שדות נוספים</div><div class="box">${extra.map(fieldHtml).join('')}</div></div>`}
+      <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all 20 fields, same order as the table / desktop card -->
       ${datalists()}
     </div>
     <div class="bottom"><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
   $('#back').onclick = closeCard;
   if ($('#hist')) $('#hist').onclick = () => showHistory(c.id);
-  if ($('#toggle')) $('#toggle').onclick = () => { c.extra = !c.extra; $('#extra').classList.toggle('hidden', !c.extra); $('#toggle').textContent = c.extra ? 'פחות שדות ▴' : `כל ${COLS.length} השדות ▾`; };
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
   document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
