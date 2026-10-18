@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.11';
+const APP_VERSION = 'mobile 1.12';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -339,9 +339,31 @@ function sheet(html) {
   m.innerHTML = `<div class="sheet"><div class="grip"></div>${html}</div>`;
   m.classList.remove('hidden');
   m.onclick = e => { if (e.target === m) closeSheet(); };
+  guard();
   return m.firstElementChild;
 }
-function closeSheet() { const m = $('#modal'); m.classList.add('hidden'); m.innerHTML = ''; if (closeSheet.cb) { const cb = closeSheet.cb; closeSheet.cb = null; cb(false); } }
+function closeSheet() { const m = $('#modal'); m.classList.add('hidden'); m.innerHTML = ''; if (closeSheet.cb) { const cb = closeSheet.cb; closeSheet.cb = null; cb(false); } unguard(); }
+
+// ───────────── phone "back" button (1.12): closes the editor / window / card instead of leaving the app ─────────────
+const sheetOpen = () => !$('#modal').classList.contains('hidden');
+const somethingOpen = () => !!$('#bigedit') || sheetOpen() || S.view === 'card';
+function guard() {                      // one extra history entry while a card / window / editor is open
+  clearTimeout(unguard.t);
+  if (!(history.state && history.state.tm)) { try { history.pushState({tm: 1}, ''); } catch {} }
+}
+function unguard() {                    // nothing open any more → drop that entry (later, in case something opens right away)
+  clearTimeout(unguard.t);
+  unguard.t = setTimeout(() => {
+    if (!somethingOpen() && history.state && history.state.tm) { S.ignorePop = true; history.back(); }
+  }, 350);
+}
+window.addEventListener('popstate', async () => {
+  if (S.ignorePop) { S.ignorePop = false; return; }
+  if ($('#bigedit')) { $('#bigcancel').click(); }
+  else if (sheetOpen()) closeSheet();
+  else if (S.view === 'card') await closeCard();
+  if (somethingOpen()) guard();
+});
 // ───────────── קרע סיב form (1.9): six fields → one sentence in פתרון ─────────────
 const FIBER = {reason: ['קרע סיב', 'נזק בארונית', 'נשלף מארונית'], cable: ['F12', 'F36', 'F72', 'F144', 'F288'], route: ['עילי', 'תת"ק'], fix: ['החלפה', 'משיכה']};
 function fiberText(d) {        // קרע סיב F12 בין 400-1 לבין 400-2 עילי 100 מטר. בוצע החלפה וחיבור.
@@ -666,7 +688,7 @@ function refreshLive() {
 
 // ───────────── list ─────────────
 function renderList() {
-  S.view = 'list'; S.card = null; track();
+  S.view = 'list'; S.card = null; track(); unguard();
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><button class="icon" id="set">⚙</button></div><div id="pill">${pillHtml()}</div></div>
     ${S.readonly ? `<div class="banner grey">הנתונים מ-<bdi dir="ltr">${esc(S.cacheAt)}</bdi>. אפשר לחפש, לפתוח טיקט, להעתיק ולשלוח ב-WhatsApp. שמירה — כשתחזור הרשת.<br><button id="retry">התחבר שוב</button></div>` : ''}
@@ -722,6 +744,7 @@ function openCard(id) {
   S.view = 'card';
   renderCard();
   track();
+  guard();
 }
 function fieldHtml(c) {
   const v = S.card.before[c] ?? '';
@@ -759,8 +782,9 @@ function renderCard() {
       <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all 20 fields, same order as the table / desktop card -->
       ${datalists()}
     </div>
-    <div class="bottom"><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
+    <div class="bottom"><button class="btn goback" id="back2" aria-label="חזרה">→ חזרה</button><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
   $('#back').onclick = closeCard;
+  $('#back2').onclick = closeCard;
   if ($('#hist')) $('#hist').onclick = () => showHistory(c.id);
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
@@ -877,8 +901,9 @@ function openTextEditor(col) {
     </div>`;
   document.body.appendChild(ov);
   document.body.classList.add('noscroll');
+  guard();
   const ta = $('#bigtext');
-  const close = () => { ov.remove(); document.body.classList.remove('noscroll'); };
+  const close = () => { ov.remove(); document.body.classList.remove('noscroll'); unguard(); };
   $('#bigcancel').onclick = close;
   ov.addEventListener('click', e => { if (e.target === ov) close(); });
   if (!ro) {
@@ -1003,5 +1028,4 @@ function settings() {
   };
 }
 
-window.addEventListener('popstate', () => { if (S.view === 'card') closeCard(); });
 start();
