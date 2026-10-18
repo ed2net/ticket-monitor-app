@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.7';
+const APP_VERSION = 'mobile 1.8';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -9,13 +9,18 @@ const TOPIC = 'realtime:ticketmonitor';
 const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'], ['sent_by', 'נשלח ע"י'], ['sent_group', 'נשלח בקבוצה'],
   ['city', 'עיר'], ['site', 'מתחם'], ['street', 'רחוב'], ['house', 'בית'], ['entrance', 'כניסה'], ['cabinet', 'ארונית'],
   ['work_type', 'סוג העבודה'], ['contractor', 'קבלן מבצע'], ['escalation_date', 'תאריך הקפצה'], ['fault', 'זיהוי תקלה'],
-  ['close_type', 'סוג סגירת התקלה'], ['status', 'סטטוס'], ['infrastructure', 'תשתית'], ['inspector', 'מפקח'], ['close_date', 'תאריך סגירה'],
+  ['close_type', 'סוג סגירת התקלה'], ['status', 'סטטוס'], ['infrastructure', 'קוד תקלה'], ['inspector', 'מפקח'], ['close_date', 'תאריך סגירה'],
   ['solution', 'פתרון'], ['notes', 'הערות']];
 const COLS = F.map(x => x[0]);
 const LABEL = Object.fromEntries(F);
 const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date']);
 const DATE_ONLY = new Set(['escalation_date']);      // date without time
-const MULTI = new Set(['infrastructure', 'solution', 'notes']);
+const MULTI = new Set(['solution', 'notes']);
+// 1.8: the column that was 'תשתית' (database column infrastructure, always empty) is now 'קוד תקלה', filled from זיהוי תקלה
+const CODE_OPTIONS = ['HP 30', 'HP 32', 'HP 33', 'יחידות עבודה'];
+const FAULT_CODES = {'עוצמות אור בארון': ['HP 30'], 'הנגשה': ['HP 32'],
+  'optical issue': ['HP 33', 'יחידות עבודה'], 'onts los': ['HP 33', 'יחידות עבודה']};
+const faultCodes = f => FAULT_CODES[String(f || '').replace(/_/g, ' ').toLowerCase().split(/\s+/).filter(Boolean).join(' ')] || [];
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
 const NEW_COLS = new Set(['inspector']);      // added later (SQL 06): the app still works on a database without them
@@ -330,6 +335,23 @@ function sheet(html) {
   return m.firstElementChild;
 }
 function closeSheet() { const m = $('#modal'); m.classList.add('hidden'); m.innerHTML = ''; if (closeSheet.cb) { const cb = closeSheet.cb; closeSheet.cb = null; cb(false); } }
+function choose(title, text, options) {      // one button per option; resolves to the option or null
+  return new Promise(res => {
+    const s = sheet(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="btns">${options.map((o, i) =>
+      `<button class="btn dark" data-o="${i}">${esc(o)}</button>`).join('')}</div><div class="btns"><button class="btn" data-o="-1">ביטול</button></div>`);
+    closeSheet.cb = () => res(null);
+    s.querySelectorAll('[data-o]').forEach(b => b.onclick = () => { closeSheet.cb = null; closeSheet(); const i = +b.dataset.o; res(i >= 0 ? options[i] : null); });
+  });
+}
+async function faultChanged() {   // עוצמות אור בארון → HP 30, הנגשה → HP 32, Optical issue / ONTs LOS → HP 33 or יחידות עבודה
+  const c = S.card, fault = norm(inputOf('fault').value), opts = faultCodes(fault), code = inputOf('infrastructure');
+  if (S.readonly || !c || !code || !opts.length || opts.includes(norm(code.value))) return;
+  if (opts.length === 1) { code.value = opts[0]; onEdit('infrastructure'); return; }
+  if (c.faultAsked === fault) return;
+  c.faultAsked = fault;
+  const pick = await choose('קוד תקלה', `זיהוי תקלה: ${fault}\nבחר קוד תקלה:`, opts);
+  if (pick && S.card === c) { code.value = pick; onEdit('infrastructure'); }
+}
 function ask(title, text, yes = 'כן', no = 'ביטול', danger = false) {
   return new Promise(res => {
     const s = sheet(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="btns"><button class="btn ${danger ? 'red' : 'dark'}" data-a="y">${esc(yes)}</button><button class="btn" data-a="n">${esc(no)}</button></div>`);
@@ -648,7 +670,7 @@ function openCard(id) {
 function fieldHtml(c) {
   const v = S.card.before[c] ?? '';
   const ro = S.readonly || MISSING.has(c) ? 'readonly' : '';
-  const list = LOOKUP[c] ? `list="dl-${c}"` : '';
+  const list = LOOKUP[c] || c === 'infrastructure' ? `list="dl-${c}"` : '';
   const ltr = DATE_COLS.has(c) || c === 'fdt' || c === 'house' || c === 'cabinet' ? 'ltr' : '';
   const input = MULTI.has(c) ? `<textarea data-c="${c}" data-big="${c}" readonly rows="2" placeholder="${S.readonly ? '' : 'לחץ לכתיבה…'}">${esc(v)}</textarea>`
     : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? `inputmode="numeric" placeholder="${DATE_ONLY.has(c) ? 'dd/mm/yyyy' : 'dd/mm/yyyy HH:MM'}"` : ''} autocomplete="off">`;
@@ -664,6 +686,7 @@ function datalists() {
     else vals = lookupValues(kind);
     out.push(`<datalist id="dl-${c}">${vals.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
   }
+  out.push(`<datalist id="dl-infrastructure">${CODE_OPTIONS.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
   return out.join('');
 }
 function renderCard() {
@@ -686,6 +709,7 @@ function renderCard() {
   $('#save').onclick = save;
   document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
   document.querySelectorAll('[data-big]').forEach(el => el.addEventListener('click', () => openTextEditor(el.dataset.big)));
+  if (inputOf('fault')) inputOf('fault').addEventListener('change', faultChanged);
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
     const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
