@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.8';
+const APP_VERSION = 'mobile 1.9';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -335,6 +335,55 @@ function sheet(html) {
   return m.firstElementChild;
 }
 function closeSheet() { const m = $('#modal'); m.classList.add('hidden'); m.innerHTML = ''; if (closeSheet.cb) { const cb = closeSheet.cb; closeSheet.cb = null; cb(false); } }
+// ───────────── קרע סיב form (1.9): six fields → one sentence in פתרון ─────────────
+const FIBER = {cable: ['F12', 'F36', 'F72', 'F144', 'F288'], route: ['עילי', 'תת"ק'], fix: ['החלפה', 'משיכה']};
+function fiberText(d) {        // קרע סיב F12 בין 400-1 לבין 400-2 עילי 100 מטר. בוצע החלפה וחיבור.
+  const g = k => String(d[k] || '').trim();
+  const parts = [g('reason'), g('cable'), (g('a') || g('b')) ? `בין ${g('a') || '?'} לבין ${g('b') || '?'}` : '', g('route'), g('m') ? `${g('m')} מטר` : ''];
+  const first = parts.filter(Boolean).join(' ');
+  let t = first ? first + '.' : '';
+  if (g('fix')) t = (t ? t + ' ' : '') + `בוצע ${g('fix')} וחיבור.`;
+  return t;
+}
+const FIBER_RE = /([^\n.]*?)\s*(F\d+)?\s*(?:בין (\S+) לבין (\S+))?\s*(עילי|תת"ק)?\s*(?:([\d.,]+) מטר)?\.(?:\s*בוצע (\S+) וחיבור\.)?/;
+function fiberParse(text) {
+  for (const line of String(text || '').split('\n')) {
+    if (!(line.includes('בין') || line.includes('קרע') || FIBER.cable.some(c => line.includes(c)))) continue;
+    const m = line.match(FIBER_RE);
+    if (m && (m[2] || m[3] || m[6])) return {reason: (m[1] || '').trim(), cable: m[2] || '', a: m[3] || '', b: m[4] || '', route: m[5] || '', m: m[6] || '', fix: m[7] || ''};
+  }
+  return null;
+}
+function fiberForm() {
+  const ta = inputOf('solution'); if (!ta) return;
+  const d = fiberParse(ta.value) || {reason: 'קרע סיב'};
+  const sel = (k, opts) => `<select data-k="${k}"><option value=""></option>${opts.map(o => `<option${o === d[k] ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  const s = sheet(`<h3>קרע סיב</h3><div class="fiber">
+      <label>מה הסיבה<input data-k="reason" value="${esc(d.reason || '')}" list="dl-fr"><datalist id="dl-fr"><option value="קרע סיב"></datalist></label>
+      <label>סוג כבל${sel('cable', FIBER.cable)}</label>
+      <label>בין<input data-k="a" value="${esc(d.a || '')}" placeholder="מספר"></label>
+      <label>לבין<input data-k="b" value="${esc(d.b || '')}" placeholder="מספר"></label>
+      <label>תוואי${sel('route', FIBER.route)}</label>
+      <label>כמה מטרים<input data-k="m" value="${esc(d.m || '')}" inputmode="decimal" placeholder="מטרים"></label>
+      <label>פתרון${sel('fix', FIBER.fix)}</label></div>
+    <p class="fprev" id="fprev"></p>
+    <div class="btns"><button class="btn save" id="fok">הכנס לפתרון</button><button class="btn" id="fno">ביטול</button></div>`);
+  const vals = () => Object.fromEntries([...s.querySelectorAll('[data-k]')].map(e => [e.dataset.k, e.value]));
+  const upd = () => { $('#fprev').textContent = fiberText(vals()) || '—'; };
+  s.querySelectorAll('[data-k]').forEach(e => { e.addEventListener('input', upd); e.addEventListener('change', upd); });
+  upd();
+  s.querySelector('#fno').onclick = closeSheet;
+  s.querySelector('#fok').onclick = () => {
+    const t = fiberText(vals());
+    closeSheet();
+    if (!t) return;
+    const lines = ta.value ? ta.value.split('\n') : [];
+    ta.value = fiberParse(ta.value) ? lines.map(l => fiberParse(l) ? t : l).join('\n') : (ta.value.trim() ? ta.value.replace(/\s+$/, '') + '\n' + t : t);
+    onEdit('solution');
+    toast('נכנס לפתרון — לחץ "שמור" לשמירת הטיקט');
+  };
+}
+
 function choose(title, text, options) {      // one button per option; resolves to the option or null
   return new Promise(res => {
     const s = sheet(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="btns">${options.map((o, i) =>
@@ -675,7 +724,8 @@ function fieldHtml(c) {
   const input = MULTI.has(c) ? `<textarea data-c="${c}" data-big="${c}" readonly rows="2" placeholder="${S.readonly ? '' : 'לחץ לכתיבה…'}">${esc(v)}</textarea>`
     : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? `inputmode="numeric" placeholder="${DATE_ONLY.has(c) ? 'dd/mm/yyyy' : 'dd/mm/yyyy HH:MM'}"` : ''} autocomplete="off">`;
   const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
-  return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}" id="f-${c}"><label>${esc(LABEL[c])}</label>${input}${now}</div>`;
+  const fiber = c === 'solution' && !S.readonly ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>' : '';
+  return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
 }
 function datalists() {
   const out = [];
@@ -710,6 +760,7 @@ function renderCard() {
   document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
   document.querySelectorAll('[data-big]').forEach(el => el.addEventListener('click', () => openTextEditor(el.dataset.big)));
   if (inputOf('fault')) inputOf('fault').addEventListener('change', faultChanged);
+  if ($('#fiberbtn')) $('#fiberbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); fiberForm(); };
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
     const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
