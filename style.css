@@ -27,12 +27,12 @@ input,select,textarea{font:inherit;color:var(--ink)}
 .count{font-size:12px;color:var(--quiet);padding:0 16px 6px}
 .list{padding:0 12px 96px}
 .card{display:block;width:100%;text-align:right;background:#fff;border-radius:14px;padding:11px 13px;margin-bottom:9px;box-shadow:0 1px 2px rgba(0,0,0,.08);border-right:5px solid var(--line)}
-.card.st-open{border-right-color:#d6402b}.card.st-work{border-right-color:#e39a12}.card.st-done{border-right-color:#1fa855}
+.card.st-open{border-right-color:#c53b3b}.card.st-cont{border-right-color:#c7700e}.card.st-work{border-right-color:#2b6fc2}.card.st-done{border-right-color:#25864a}
 .card.edit{background:#fff8ea}.card.view{background:#eef4ff}
 .row1{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .fdt{font-weight:700;font-size:15.5px;direction:ltr;unicode-bidi:isolate}
 .badge{font-size:11.5px;border-radius:10px;padding:2px 9px;font-weight:600;white-space:nowrap;max-width:50%;overflow:hidden;text-overflow:ellipsis}
-.b-open{background:#ffe1dc;color:#8a1f12}.b-work{background:#fff1d6;color:#7a4b00}.b-done{background:#e3f6ea;color:#1e6b3a}
+.b-open{background:#fde7e7;color:#a12f2f}.b-cont{background:#fff0da;color:#9a5608}.b-work{background:#e2eefc;color:#22599d}.b-done{background:#e1f3e7;color:#1e6b3a}
 .addr{font-size:13.5px;margin-top:4px}
 .meta{font-size:12px;color:var(--quiet);margin-top:3px;display:flex;justify-content:space-between;gap:8px}
 .who{font-size:11.5px;color:#9a5b00;margin-top:4px;font-weight:600}
@@ -111,3 +111,12 @@ body.noscroll{overflow:hidden}
 .fprev{margin-top:10px;background:#fff4ce;border:1px solid #e0c36a;border-radius:10px;padding:10px;font-size:15px}
 .btn.goback{flex:0 0 31%;background:var(--graphite);color:#fff;border-color:var(--graphite);font-size:17px}
 .back{font-size:26px;padding:0 8px}
+/* 1.14: coloured status buttons with numbers (same colours as the computer) */
+.chip b{font-weight:800;margin-right:3px}
+.chip.c-open{color:#c53b3b;border-color:#c53b3b;background:#fde7e7}.chip.c-cont{color:#c7700e;border-color:#c7700e;background:#fff0da}
+.chip.c-work{color:#2b6fc2;border-color:#2b6fc2;background:#e2eefc}.chip.c-done{color:#25864a;border-color:#25864a;background:#e1f3e7}
+.chip.c-today{color:#5b4bb5;border-color:#a99fe0}
+.chip.on.c-open{background:#c53b3b;color:#fff}.chip.on.c-cont{background:#c7700e;color:#fff}.chip.on.c-work{background:#2b6fc2;color:#fff}
+.chip.on.c-done{background:#25864a;color:#fff}.chip.on.c-today{background:#5b4bb5;border-color:#5b4bb5;color:#fff}
+.card{border-right-width:7px}
+.chips{flex-wrap:wrap;overflow-x:visible}

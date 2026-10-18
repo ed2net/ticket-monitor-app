@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.13';
+const APP_VERSION = 'mobile 1.14';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -91,9 +91,13 @@ function recToDb(vals, cols) {
   }
   return o;
 }
+// 1.14: status groups and filter buttons — same colours as the computer (10.20)
+const CHIPS = [['all', 'הכל'], ['open', 'פתוח'], ['cont', 'המשך טיפול'], ['work', 'בטיפול'], ['done', 'סגור'], ['today', 'נפתחו היום']];
+function savedChip() { try { const c = localStorage.getItem('tm_chip'); return CHIPS.some(x => x[0] === c) ? c : 'all'; } catch { return 'all'; } }
 function stClass(r) {
   const s = (r.status || '').toLowerCase();
   if (DONE_WORDS.some(w => s.includes(w))) return 'done';
+  if (s.includes('המשך')) return 'cont';
   if (s.includes('טיפול')) return 'work';
   return (!s && r.close_date) ? 'done' : 'open';
 }
@@ -322,7 +326,7 @@ function saveSession(s) { try { localStorage.setItem(SESSION_KEY, JSON.stringify
 const S = {
   cloud: new Cloud(CFG.url, CFG.key), rt: null, session: loadSession(), conn: Math.random().toString(16).slice(2, 14),
   recs: new Map(), lookups: [], names: {}, role: 'user', tm: '', lm: '', loaded: false, readonly: false, cacheAt: '',
-  restOk: true, rtOnline: false, connections: [], view: 'login', chip: 'open', query: '', limit: 60,
+  restOk: true, rtOnline: false, connections: [], view: 'login', chip: savedChip(), query: '', limit: 60,
   card: null, syncing: false, syncAgain: false, pollTimer: null,
 };
 const $ = s => document.querySelector(s);
@@ -699,13 +703,13 @@ function renderList() {
     <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><button class="icon" id="set">⚙</button></div><div id="pill">${pillHtml()}</div></div>
     ${S.readonly ? `<div class="banner grey">הנתונים מ-<bdi dir="ltr">${esc(S.cacheAt)}</bdi>. אפשר לחפש, לפתוח טיקט, להעתיק ולשלוח ב-WhatsApp. שמירה — כשתחזור הרשת.<br><button id="retry">התחבר שוב</button></div>` : ''}
     <input id="q" class="search" type="search" placeholder="🔍  חיפוש: מספר, עיר, רחוב, ארונית…" value="${esc(S.query)}">
-    <div class="chips">${[['open', 'פתוחים'], ['work', 'בטיפול'], ['today', 'נסגרו היום'], ['all', 'הכל']].map(([k, t]) =>
-      `<button class="chip ${S.chip === k ? 'on' : ''}" data-chip="${k}">${t}</button>`).join('')}</div>
+    <div class="chips">${CHIPS.map(([k, t]) =>
+      `<button class="chip c-${k} ${S.chip === k ? 'on' : ''}" data-chip="${k}">${t} <b data-n="${k}"></b></button>`).join('')}</div>
     <div class="count" id="count"></div><div class="list" id="list"></div>
     ${S.readonly ? '' : '<button class="fab" id="new">+</button>'}</div>`;
   $('#set').onclick = settings;
   $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
-  document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = b.dataset.chip; S.limit = 60; renderList(); });
+  document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = b.dataset.chip; S.limit = 60; try { localStorage.setItem('tm_chip', S.chip); } catch {} renderList(); });
   if ($('#new')) $('#new').onclick = () => openCard(null);
   if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(() => kv.get('cache')).then(c => usableCache(c) ? quickStart(c) : enterOnline()).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('')); } else renderLogin(''); };
   renderListBody();
@@ -713,17 +717,21 @@ function renderList() {
 function filtered() {
   const today = nowText().slice(0, 10);
   let rows = [...S.recs.values()];
-  if (S.chip === 'open') rows = rows.filter(r => stClass(r) !== 'done');
-  else if (S.chip === 'work') rows = rows.filter(r => stClass(r) === 'work');
-  else if (S.chip === 'today') rows = rows.filter(r => r.close_date.startsWith(today));
   const words = S.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) rows = rows.filter(r => words.every(w => r._s.includes(w)));
+  const isToday = r => (r.entry_date || '').startsWith(today);
+  const n = {all: rows.length, open: 0, cont: 0, work: 0, done: 0, today: 0};      // numbers on the buttons
+  for (const r of rows) { n[stClass(r)]++; if (isToday(r)) n.today++; }
+  S.chipCounts = n;
+  if (S.chip === 'today') rows = rows.filter(isToday);
+  else if (S.chip !== 'all') rows = rows.filter(r => stClass(r) === S.chip);
   return rows.sort((a, b) => b.id - a.id);
 }
 function renderListBody() {
   const list = $('#list'); if (!list) return;
   const rows = filtered();
   $('#count').textContent = `${rows.length} טיקטים`;
+  document.querySelectorAll('[data-n]').forEach(b => { b.textContent = (S.chipCounts || {})[b.dataset.n] ?? ''; });
   const open = {};
   for (const c of S.connections) if (c.conn !== S.conn && c.ticket_id != null) { const o = open[c.ticket_id] || (open[c.ticket_id] = {names: [], edit: false}); o.names.push(c.name || userName(c.user_id)); o.edit = o.edit || !!c.editing; }
   list.innerHTML = rows.slice(0, S.limit).map(r => {
