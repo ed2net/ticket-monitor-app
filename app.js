@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.6';
+const APP_VERSION = 'mobile 1.7';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -9,7 +9,7 @@ const TOPIC = 'realtime:ticketmonitor';
 const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'], ['sent_by', 'נשלח ע"י'], ['sent_group', 'נשלח בקבוצה'],
   ['city', 'עיר'], ['site', 'מתחם'], ['street', 'רחוב'], ['house', 'בית'], ['entrance', 'כניסה'], ['cabinet', 'ארונית'],
   ['work_type', 'סוג העבודה'], ['contractor', 'קבלן מבצע'], ['escalation_date', 'תאריך הקפצה'], ['fault', 'זיהוי תקלה'],
-  ['close_type', 'סוג סגירת התקלה'], ['status', 'סטטוס'], ['infrastructure', 'תשתית'], ['close_date', 'תאריך סגירה'],
+  ['close_type', 'סוג סגירת התקלה'], ['status', 'סטטוס'], ['infrastructure', 'תשתית'], ['inspector', 'מפקח'], ['close_date', 'תאריך סגירה'],
   ['solution', 'פתרון'], ['notes', 'הערות']];
 const COLS = F.map(x => x[0]);
 const LABEL = Object.fromEntries(F);
@@ -17,8 +17,11 @@ const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date']);
 const DATE_ONLY = new Set(['escalation_date']);      // date without time
 const MULTI = new Set(['infrastructure', 'solution', 'notes']);
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
-  contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status'};
-const SEL = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'].concat(COLS).join(',');
+  contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
+const NEW_COLS = new Set(['inspector']);      // added later (SQL 06): the app still works on a database without them
+const MISSING = new Set();
+const META = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'];
+const sel = () => META.concat(COLS.filter(c => !MISSING.has(c))).join(',');
 const DONE_WORDS = ['finish', 'סגור', 'נסגר', 'בוצע', 'done', 'closed'];
 
 // ───────────── helpers ─────────────
@@ -158,7 +161,16 @@ class Cloud {
       start += 1000;
     }
   }
-  loadTickets() { return this.fetchAll('tickets', 'select=' + SEL + '&order=id'); }
+  async cols(fn) {               // a newer column missing in the database -> drop it and repeat
+    try { return await fn(); }
+    catch (e) {
+      const gone = [...NEW_COLS].filter(c => !MISSING.has(c) && String(e.message).includes(c));
+      if (e instanceof OfflineError || e instanceof AuthError || !gone.length) throw e;
+      gone.forEach(c => MISSING.add(c));
+      return this.cols(fn);
+    }
+  }
+  loadTickets() { return this.cols(() => this.fetchAll('tickets', 'select=' + sel() + '&order=id')); }
   loadLookups() { return this.fetchAll('lookups', 'select=id,kind,value,parent,active&order=kind,value'); }
   async loadProfiles() {
     try { return await this.fetchAll('profiles', 'select=id,display_name,role,can_edit_lookups'); }
@@ -169,17 +181,23 @@ class Cloud {
     catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; return null; }
   }
   async lastLogTime() { const r = await this.req('GET', '/rest/v1/ticket_log?select=at&order=at.desc&limit=1'); return r && r[0] ? r[0].at : ''; }
-  async changesSince(tm, lm) {
+  changesSince(tm, lm) { return this.cols(() => this._changesSince(tm, lm)); }
+  async _changesSince(tm, lm) {
     const back = s => { const d = parseTs(s); return d ? new Date(d.getTime() - 120000).toISOString() : ''; };
-    let tq = 'select=' + SEL + '&order=id', lq = 'select=ticket_id,at&action=eq.delete&order=at';
+    let tq = 'select=' + sel() + '&order=id', lq = 'select=ticket_id,at&action=eq.delete&order=at';
     if (back(tm)) tq += '&updated_at=gte.' + encodeURIComponent(back(tm));
     if (back(lm)) lq += '&at=gte.' + encodeURIComponent(back(lm));
     return [await this.fetchAll('tickets', tq), await this.fetchAll('ticket_log', lq)];
   }
-  async getTicket(id) { const r = await this.req('GET', `/rest/v1/tickets?select=${SEL}&id=eq.${+id}`); return r && r[0] ? r[0] : null; }
-  async insertTicket(row) { const r = await this.req('POST', `/rest/v1/tickets?select=${SEL}`, row, {Prefer: 'return=representation'}); return r[0]; }
-  async updateTicket(id, version, body) {
-    const r = await this.req('PATCH', `/rest/v1/tickets?id=eq.${+id}&version=eq.${+version}&select=${SEL}`, body, {Prefer: 'return=representation'});
+  getTicket(id) { return this.cols(() => this._getTicket(id)); }
+  async _getTicket(id) { const r = await this.req('GET', `/rest/v1/tickets?select=${sel()}&id=eq.${+id}`); return r && r[0] ? r[0] : null; }
+  insertTicket(row) { return this.cols(() => this._insertTicket(row)); }
+  async _insertTicket(row) { row = Object.fromEntries(Object.entries(row).filter(([k]) => !MISSING.has(k)));
+    const r = await this.req('POST', `/rest/v1/tickets?select=${sel()}`, row, {Prefer: 'return=representation'}); return r[0]; }
+  updateTicket(id, version, body) { return this.cols(() => this._updateTicket(id, version, body)); }
+  async _updateTicket(id, version, body) {
+    body = Object.fromEntries(Object.entries(body).filter(([k]) => !MISSING.has(k)));
+    const r = await this.req('PATCH', `/rest/v1/tickets?id=eq.${+id}&version=eq.${+version}&select=${sel()}`, body, {Prefer: 'return=representation'});
     return r && r[0] ? r[0] : null;
   }
   ticketHistory(id) { return this.fetchAll('ticket_log', `select=id,action,changed,old_row,new_row,by_user,at&ticket_id=eq.${+id}&order=at.desc`); }
@@ -629,7 +647,7 @@ function openCard(id) {
 }
 function fieldHtml(c) {
   const v = S.card.before[c] ?? '';
-  const ro = S.readonly ? 'readonly' : '';
+  const ro = S.readonly || MISSING.has(c) ? 'readonly' : '';
   const list = LOOKUP[c] ? `list="dl-${c}"` : '';
   const ltr = DATE_COLS.has(c) || c === 'fdt' || c === 'house' || c === 'cabinet' ? 'ltr' : '';
   const input = MULTI.has(c) ? `<textarea data-c="${c}" data-big="${c}" readonly rows="2" placeholder="${S.readonly ? '' : 'לחץ לכתיבה…'}">${esc(v)}</textarea>`
