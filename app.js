@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.9';
+const APP_VERSION = 'mobile 1.10';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -17,9 +17,16 @@ const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date']);
 const DATE_ONLY = new Set(['escalation_date']);      // date without time
 const MULTI = new Set(['solution', 'notes']);
 // 1.8: the column that was 'תשתית' (database column infrastructure, always empty) is now 'קוד תקלה', filled from זיהוי תקלה
-const CODE_OPTIONS = ['HP 30', 'HP 32', 'HP 33', 'יחידות עבודה'];
+const WORK_UNITS = 'לפי יח׳ עבודה';    // was 'יחידות עבודה'
+const CODE_OPTIONS = ['HP 30', 'HP 32', 'HP 33', WORK_UNITS];
 const FAULT_CODES = {'עוצמות אור בארון': ['HP 30'], 'הנגשה': ['HP 32'],
-  'optical issue': ['HP 33', 'יחידות עבודה'], 'onts los': ['HP 33', 'יחידות עבודה']};
+  'optical issue': ['HP 33', WORK_UNITS], 'onts los': ['HP 33', WORK_UNITS]};
+const FIBER_CABLE_CODE = {F12: 'HP 33', F36: WORK_UNITS, F72: WORK_UNITS, F144: WORK_UNITS, F288: WORK_UNITS};
+function fiberCode(fault, solution) {   // Optical issue / ONTs LOS + קרע סיב: F12 → HP 33, F36…F288 → לפי יח׳ עבודה
+  const opts = faultCodes(fault); if (opts.length < 2) return '';
+  const code = FIBER_CABLE_CODE[((fiberParse(solution) || {}).cable || '').toUpperCase()] || '';
+  return opts.includes(code) ? code : '';
+}
 const faultCodes = f => FAULT_CODES[String(f || '').replace(/_/g, ' ').toLowerCase().split(/\s+/).filter(Boolean).join(' ')] || [];
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
@@ -380,6 +387,7 @@ function fiberForm() {
     const lines = ta.value ? ta.value.split('\n') : [];
     ta.value = fiberParse(ta.value) ? lines.map(l => fiberParse(l) ? t : l).join('\n') : (ta.value.trim() ? ta.value.replace(/\s+$/, '') + '\n' + t : t);
     onEdit('solution');
+    faultChanged();
     toast('נכנס לפתרון — לחץ "שמור" לשמירת הטיקט');
   };
 }
@@ -392,9 +400,12 @@ function choose(title, text, options) {      // one button per option; resolves 
     s.querySelectorAll('[data-o]').forEach(b => b.onclick = () => { closeSheet.cb = null; closeSheet(); const i = +b.dataset.o; res(i >= 0 ? options[i] : null); });
   });
 }
-async function faultChanged() {   // עוצמות אור בארון → HP 30, הנגשה → HP 32, Optical issue / ONTs LOS → HP 33 or יחידות עבודה
-  const c = S.card, fault = norm(inputOf('fault').value), opts = faultCodes(fault), code = inputOf('infrastructure');
-  if (S.readonly || !c || !code || !opts.length || opts.includes(norm(code.value))) return;
+async function faultChanged() {   // עוצמות אור בארון → HP 30, הנגשה → HP 32, Optical issue / ONTs LOS → HP 33 or לפי יח׳ עבודה
+  const c = S.card, fault = norm((inputOf('fault') || {}).value), opts = faultCodes(fault), code = inputOf('infrastructure');
+  if (S.readonly || !c || !code) return;
+  const byCable = fiberCode(fault, (inputOf('solution') || {}).value);
+  if (byCable) { if (norm(code.value) !== byCable) { code.value = byCable; onEdit('infrastructure'); } return; }
+  if (!opts.length || opts.includes(norm(code.value))) return;
   if (opts.length === 1) { code.value = opts[0]; onEdit('infrastructure'); return; }
   if (c.faultAsked === fault) return;
   c.faultAsked = fault;
