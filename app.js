@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.12';
+const APP_VERSION = 'mobile 1.13';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -448,6 +448,12 @@ function lookupValues(kind, parent) {
   for (const l of S.lookups) if (l.kind === kind && (parent == null || (l.parent || '') === parent) && l.active !== false && l.value) set.add(l.value);
   return [...set].sort((a, b) => a.localeCompare(b, 'he'));
 }
+const groupKey = v => String(v || '').replace(/_/g, ' ').toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+function inspectorValues(channel) {     // מפקח: names for every group + names of this group (נשלח בקבוצה)
+  const key = groupKey(channel), set = new Set();
+  for (const l of S.lookups) if (l.kind === 'inspector' && l.active !== false && l.value && (!l.parent || (key && groupKey(l.parent) === key))) set.add(l.value);
+  return [...set].sort((a, b) => a.localeCompare(b, 'he'));
+}
 
 // ───────────── start ─────────────
 async function start() {
@@ -763,6 +769,7 @@ function datalists() {
     let vals;
     if (kind === 'site') vals = lookupValues('site', normCity(S.card.before.city));
     else if (kind === 'channel') vals = lookupValues('channel', norm(S.card.before.sent_by));
+    else if (kind === 'inspector') vals = inspectorValues(S.card.before.sent_group);
     else vals = lookupValues(kind);
     out.push(`<datalist id="dl-${c}">${vals.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
   }
@@ -816,6 +823,7 @@ function onEdit(col) {
   const c = S.card;
   if (col === 'city') { const dl = $('#dl-site'); if (dl) dl.innerHTML = lookupValues('site', normCity(inputOf('city').value)).map(v => `<option value="${esc(v)}">`).join(''); }
   if (col === 'sent_by') { const dl = $('#dl-sent_group'); if (dl) dl.innerHTML = lookupValues('channel', norm(inputOf('sent_by').value)).map(v => `<option value="${esc(v)}">`).join(''); }
+  if (col === 'sent_by' || col === 'sent_group') { const dl = $('#dl-inspector'); if (dl && inputOf('sent_group')) dl.innerHTML = inspectorValues(inputOf('sent_group').value).map(v => `<option value="${esc(v)}">`).join(''); }
   if (col === 'status') {                 // a closed status fills the close date (if empty)
     const st = stClass({status: inputOf('status').value, close_date: ''});
     const cd = inputOf('close_date');
