@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.14';
+const APP_VERSION = 'mobile 1.15';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -92,16 +92,17 @@ function recToDb(vals, cols) {
   return o;
 }
 // 1.14: status groups and filter buttons — same colours as the computer (10.20)
-const CHIPS = [['all', 'הכל'], ['open', 'פתוח'], ['cont', 'המשך טיפול'], ['work', 'בטיפול'], ['done', 'סגור'], ['today', 'נפתחו היום']];
+const CHIPS = [['all', 'הכל'], ['finish', 'FINISH'], ['wait', 'בהמתנה'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום']];
 function savedChip() { try { const c = localStorage.getItem('tm_chip'); return CHIPS.some(x => x[0] === c) ? c : 'all'; } catch { return 'all'; } }
 function stClass(r) {
   const s = (r.status || '').toLowerCase();
-  if (DONE_WORDS.some(w => s.includes(w))) return 'done';
+  if (DONE_WORDS.some(w => s.includes(w))) return 'finish';
   if (s.includes('המשך')) return 'cont';
-  if (s.includes('טיפול')) return 'work';
-  return (!s && r.close_date) ? 'done' : 'open';
+  if (s.includes('המתנה') || s.includes('ממתין')) return 'wait';
+  if (s.includes('עבודה') || s.includes('טיפול')) return 'work';
+  return (!s && r.close_date) ? 'finish' : 'other';     // other = empty / unknown status (grey)
 }
-const stText = r => r.status || (stClass(r) === 'done' ? 'סגור' : 'פתוח');
+const stText = r => r.status || (stClass(r) === 'finish' ? 'FINISH' : '—');
 
 // ───────────── errors + cloud ─────────────
 class CloudError extends Error { constructor(m, status = 0, code = '') { super(m); this.status = status; this.code = code; } }
@@ -720,7 +721,7 @@ function filtered() {
   const words = S.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) rows = rows.filter(r => words.every(w => r._s.includes(w)));
   const isToday = r => (r.entry_date || '').startsWith(today);
-  const n = {all: rows.length, open: 0, cont: 0, work: 0, done: 0, today: 0};      // numbers on the buttons
+  const n = {all: rows.length, finish: 0, wait: 0, work: 0, cont: 0, other: 0, today: 0};      // numbers on the buttons
   for (const r of rows) { n[stClass(r)]++; if (isToday(r)) n.today++; }
   S.chipCounts = n;
   if (S.chip === 'today') rows = rows.filter(isToday);
@@ -739,7 +740,7 @@ function renderListBody() {
     const addr = [r.city, [r.street, r.house].filter(Boolean).join(' '), r.cabinet ? 'ארונית ' + r.cabinet : ''].filter(Boolean).join(' · ');
     const left = [r.fault, r.contractor].filter(Boolean).join(' · ');
     return `<button class="card st-${st} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
-      <div class="row1"><span class="fdt">${esc(r.fdt)}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
+      <div class="row1"><span class="fdt f-${st}">${esc(r.fdt)}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
       <div class="addr">${esc(addr) || '—'}</div>
       <div class="meta"><span>${esc(left)}</span><span dir="ltr">${esc(r.entry_date.slice(0, 5) + (r.entry_date.length > 10 ? r.entry_date.slice(10) : ''))}</span></div>
       ${o ? `<div class="who">${o.edit ? '✎ ' + esc(o.names.join(', ')) + ' עורך/ת את הטיקט כרגע' : '👁 ' + esc(o.names.join(', ')) + ' צופה בטיקט'}</div>` : ''}
@@ -835,7 +836,7 @@ function onEdit(col) {
   if (col === 'status') {                 // a closed status fills the close date (if empty)
     const st = stClass({status: inputOf('status').value, close_date: ''});
     const cd = inputOf('close_date');
-    if (st === 'done' && cd && !norm(cd.value)) { cd.value = nowText(); toast('תאריך סגירה מולא: ' + cd.value); }
+    if (st === 'finish' && cd && !norm(cd.value)) { cd.value = nowText(); toast('תאריך סגירה מולא: ' + cd.value); }
   }
   if (DATE_COLS.has(col)) { const el = inputOf(col); el.classList.toggle('bad', !!norm(el.value) && !parseDate(el.value)); }
   if (col === 'fdt') { const el = inputOf('fdt'); el.classList.toggle('bad', isDupFdt(el.value)); }
