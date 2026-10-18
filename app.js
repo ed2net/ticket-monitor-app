@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.10';
+const APP_VERSION = 'mobile 1.11';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -343,7 +343,7 @@ function sheet(html) {
 }
 function closeSheet() { const m = $('#modal'); m.classList.add('hidden'); m.innerHTML = ''; if (closeSheet.cb) { const cb = closeSheet.cb; closeSheet.cb = null; cb(false); } }
 // ───────────── קרע סיב form (1.9): six fields → one sentence in פתרון ─────────────
-const FIBER = {cable: ['F12', 'F36', 'F72', 'F144', 'F288'], route: ['עילי', 'תת"ק'], fix: ['החלפה', 'משיכה']};
+const FIBER = {reason: ['קרע סיב', 'נזק בארונית', 'נשלף מארונית'], cable: ['F12', 'F36', 'F72', 'F144', 'F288'], route: ['עילי', 'תת"ק'], fix: ['החלפה', 'משיכה']};
 function fiberText(d) {        // קרע סיב F12 בין 400-1 לבין 400-2 עילי 100 מטר. בוצע החלפה וחיבור.
   const g = k => String(d[k] || '').trim();
   const parts = [g('reason'), g('cable'), (g('a') || g('b')) ? `בין ${g('a') || '?'} לבין ${g('b') || '?'}` : '', g('route'), g('m') ? `${g('m')} מטר` : ''];
@@ -355,18 +355,18 @@ function fiberText(d) {        // קרע סיב F12 בין 400-1 לבין 400-2 
 const FIBER_RE = /([^\n.]*?)\s*(F\d+)?\s*(?:בין (\S+) לבין (\S+))?\s*(עילי|תת"ק)?\s*(?:([\d.,]+) מטר)?\.(?:\s*בוצע (\S+) וחיבור\.)?/;
 function fiberParse(text) {
   for (const line of String(text || '').split('\n')) {
-    if (!(line.includes('בין') || line.includes('קרע') || FIBER.cable.some(c => line.includes(c)))) continue;
+    if (!(line.includes('בין') || FIBER.reason.some(r => line.includes(r)) || FIBER.cable.some(c => line.includes(c)))) continue;
     const m = line.match(FIBER_RE);
-    if (m && (m[2] || m[3] || m[6])) return {reason: (m[1] || '').trim(), cable: m[2] || '', a: m[3] || '', b: m[4] || '', route: m[5] || '', m: m[6] || '', fix: m[7] || ''};
+    if (m && (m[2] || m[3] || m[6] || FIBER.reason.includes((m[1] || '').trim()))) return {reason: (m[1] || '').trim(), cable: m[2] || '', a: m[3] || '', b: m[4] || '', route: m[5] || '', m: m[6] || '', fix: m[7] || ''};
   }
   return null;
 }
 function fiberForm() {
   const ta = inputOf('solution'); if (!ta) return;
   const d = fiberParse(ta.value) || {reason: 'קרע סיב'};
-  const sel = (k, opts) => `<select data-k="${k}"><option value=""></option>${opts.map(o => `<option${o === d[k] ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  const sel = (k, opts) => `<select data-k="${k}"><option value=""></option>${(d[k] && !opts.includes(d[k]) ? [d[k], ...opts] : opts).map(o => `<option${o === d[k] ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
   const s = sheet(`<h3>קרע סיב</h3><div class="fiber">
-      <label>מה הסיבה<input data-k="reason" value="${esc(d.reason || '')}" list="dl-fr"><datalist id="dl-fr"><option value="קרע סיב"></datalist></label>
+      <label>מה הסיבה${sel('reason', FIBER.reason)}</label>
       <label>סוג כבל${sel('cable', FIBER.cable)}</label>
       <label>בין<input data-k="a" value="${esc(d.a || '')}" placeholder="מספר"></label>
       <label>לבין<input data-k="b" value="${esc(d.b || '')}" placeholder="מספר"></label>
@@ -406,11 +406,7 @@ async function faultChanged() {   // עוצמות אור בארון → HP 30, �
   const byCable = fiberCode(fault, (inputOf('solution') || {}).value);
   if (byCable) { if (norm(code.value) !== byCable) { code.value = byCable; onEdit('infrastructure'); } return; }
   if (!opts.length || opts.includes(norm(code.value))) return;
-  if (opts.length === 1) { code.value = opts[0]; onEdit('infrastructure'); return; }
-  if (c.faultAsked === fault) return;
-  c.faultAsked = fault;
-  const pick = await choose('קוד תקלה', `זיהוי תקלה: ${fault}\nבחר קוד תקלה:`, opts);
-  if (pick && S.card === c) { code.value = pick; onEdit('infrastructure'); }
+  code.value = opts[0]; onEdit('infrastructure');   // Optical issue / ONTs LOS → HP 33 at once, no question
 }
 function ask(title, text, yes = 'כן', no = 'ביטול', danger = false) {
   return new Promise(res => {
