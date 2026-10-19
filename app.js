@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.17';
+const APP_VERSION = 'mobile 1.18';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -991,8 +991,8 @@ function applyRow(row) {
 function message(v) {             // same as the desktop (10.25): only fields with V (admin's choice), table order
   const off = new Set(S.waOff || []), lines = [];
   const cols = COLS.filter(c => norm(v[c]) && !off.has(LABEL[c]));
-  // ⚙ (3-byte) instead of 🔧: 4-byte emoji arrive as «�» through wa.me on WhatsApp Web/Desktop; RLM keeps the line on the right
-  if (cols.includes('fdt')) lines.push(`⚙ *טיקט ${norm(v.fdt)}*`, '\u200f━━━━━━━━━━━━');
+  // no icon: WhatsApp Web/Desktop turns emoji that come through wa.me into «�»; RLM keeps the line on the right
+  if (cols.includes('fdt')) lines.push(`*טיקט ${norm(v.fdt)}*`, '\u200f━━━━━━━━━━━━');
   for (const c of cols) {
     if (c === 'fdt') continue;
     const parts = String(v[c]).split('\n').map(x => x.trim()).filter(Boolean);
