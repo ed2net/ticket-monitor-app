@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.19';
+const APP_VERSION = 'mobile 1.20';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -196,6 +196,16 @@ class Cloud {
   async loadSetting(key) {        // shared setting chosen by the admin (table app_settings, SQL 10.8); null = none
     try { const r = await this.req('GET', `/rest/v1/app_settings?select=value&key=eq.${encodeURIComponent(key)}`); return r && r[0] ? r[0].value : null; }
     catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; return null; }
+  }
+  async addrSearch(city, street, house, cabinet) {   // 1.20: address book (SQL 09); null = table missing
+    const t = v => encodeURIComponent(String(v || '').replace(/[*,()]/g, ' ').trim().split(/\s+/).filter(Boolean).join(' '));
+    const f = [];
+    if (city) f.push(`city=ilike.*${t(city)}*`);
+    if (cabinet) f.push(`cabinet=ilike.${t(cabinet)}*`);
+    else { if (street) f.push(`street=ilike.*${t(street)}*`); if (house) f.push(`house=ilike.${t(house)}*`); }
+    if (!cabinet && !street) return [];
+    try { return await this.req('GET', '/rest/v1/addresses?select=city,site,cabinet,street,house,entrance,drop_status,signal&' + f.join('&') + '&order=street,house,cabinet&limit=60') || []; }
+    catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; if (e.status === 404 || e.code === 'PGRST205') return null; throw e; }
   }
   async lastLogTime() { const r = await this.req('GET', '/rest/v1/ticket_log?select=at&order=at.desc&limit=1'); return r && r[0] ? r[0].at : ''; }
   changesSince(tm, lm) { return this.cols(() => this._changesSince(tm, lm)); }
@@ -785,6 +795,44 @@ function datalists() {
   out.push(`<datalist id="dl-infrastructure">${CODE_OPTIONS.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
   return out.join('');
 }
+// ───────────── 1.20: hints from the address book (new ticket only) ─────────────
+function addrHook() {
+  const box = document.createElement('div');
+  box.id = 'addrbox'; box.className = 'addrbox hidden';
+  const after = $('#f-cabinet'); if (!after) return;
+  after.after(box);
+  let timer = null, seq = 0, mode = '';
+  const kick = m => { mode = m; clearTimeout(timer); timer = setTimeout(run, 350); };
+  ['street', 'house'].forEach(c => inputOf(c) && inputOf(c).addEventListener('input', () => kick('address')));
+  if (inputOf('cabinet')) inputOf('cabinet').addEventListener('input', () => kick('cabinet'));
+  async function run() {
+    const my = ++seq, v = values(), city = normCity(v.city);
+    let args = null;
+    if (mode === 'cabinet') { if (norm(v.cabinet).length >= 2) args = [city, '', '', norm(v.cabinet)]; }
+    else if (norm(v.street).length >= 2) args = [city, norm(v.street), norm(v.house), ''];
+    let rows = [];
+    if (args) { try { rows = await S.cloud.addrSearch(...args); } catch { rows = []; } }
+    if (my !== seq || !document.body.contains(box)) return;
+    if (rows === null) { S.addrOff = true; box.remove(); return; }
+    const seen = new Set(), items = [];
+    for (const r of rows) { const k = [r.city, r.site, r.cabinet, r.street, r.house, r.entrance].join('|'); if (!seen.has(k)) { seen.add(k); items.push(r); } if (items.length >= 20) break; }
+    const iso = x => `<bdi dir="ltr">${esc(x)}</bdi>`;
+    box.innerHTML = items.length ? `<div class="addrhead">מאגר הכתובות — ${items.length} התאמות · הקש למילוי</div>` + items.map((r, i) => {
+      const addr = [r.street, r.house].filter(Boolean).join(' ') + (r.entrance ? ' כניסה ' + r.entrance : '');
+      const low = [esc(r.city), r.site ? iso(r.site) : '', r.signal ? iso('Signal ' + r.signal) : '', r.drop_status ? 'דרופ: ' + esc(r.drop_status) : ''].filter(Boolean).join(' · ');
+      return `<button class="addritem" data-i="${i}"><b>ארונית ${iso(r.cabinet || '—')} · ${esc(addr || '—')}</b><span>${low}</span></button>`;
+    }).join('') : '';
+    box.classList.toggle('hidden', !items.length);
+    box.querySelectorAll('[data-i]').forEach(b => b.onclick = e => { e.preventDefault(); pick(items[+b.dataset.i]); });
+  }
+  function pick(r) {          // עיר (only if empty), מתחם, רחוב, בית, כניסה, ארונית — Signal / דרופ are not written
+    const set = (c, val) => { const el = inputOf(c); if (el && val) { el.value = val; onEdit(c); } };
+    if (!norm(inputOf('city') && inputOf('city').value)) set('city', r.city);
+    set('site', r.site); set('street', r.street); set('house', r.house); set('entrance', r.entrance); set('cabinet', r.cabinet);
+    seq++; box.classList.add('hidden'); box.innerHTML = '';
+    toast('הכתובת מולאה מהמאגר');
+  }
+}
 function renderCard() {
   const c = S.card, rec = c.rec, isNew = c.id == null;
   const title = isNew ? 'טיקט חדש' : 'טיקט ' + (rec.fdt || '');
@@ -801,6 +849,7 @@ function renderCard() {
     <div class="bottom"><button class="btn goback" id="back2" aria-label="חזרה">→ חזרה</button><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
   $('#back').onclick = closeCard;
   $('#back2').onclick = closeCard;
+  if (isNew && !S.readonly && !S.addrOff) addrHook();
   if ($('#hist')) $('#hist').onclick = () => showHistory(c.id);
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
