@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.15';
+const APP_VERSION = 'mobile 1.16';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -988,9 +988,18 @@ function applyRow(row) {
 }
 
 // ───────────── WhatsApp / history / settings ─────────────
-function message(v) {             // same as the desktop: only fields with V (admin's choice), table order
-  const off = new Set(S.waOff || []);
-  return COLS.filter(c => norm(v[c]) && !off.has(LABEL[c])).map(c => `${LABEL[c]}: ${norm(v[c])}`).join('\n'); }
+function message(v) {             // same as the desktop (10.25): only fields with V (admin's choice), table order
+  const off = new Set(S.waOff || []), lines = [];
+  const cols = COLS.filter(c => norm(v[c]) && !off.has(LABEL[c]));
+  if (cols.includes('fdt')) lines.push(`🔧 *טיקט ${norm(v.fdt)}*`, '━━━━━━━━━━━━');
+  for (const c of cols) {
+    if (c === 'fdt') continue;
+    const parts = String(v[c]).split('\n').map(x => x.trim()).filter(Boolean);
+    let first = parts[0] || '';
+    if (first && !/[\u0590-\u05ff]/.test(first)) first = '\u2066' + first + '\u2069';     // date / code keeps its own order
+    lines.push(`*${LABEL[c]}:* ${first}`, ...parts.slice(1).map(x => '\u200f' + x));   // *…* = bold in WhatsApp
+  }
+  return lines.join('\n'); }
 async function whatsapp() {
   if (!S.readonly) { try { await loadWaSetting(); saveCache(); } catch {} }   // newest choice of the admin
   const msg = message(values());
