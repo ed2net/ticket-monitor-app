@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.20';
+const APP_VERSION = 'mobile 1.21';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -795,17 +795,27 @@ function datalists() {
   out.push(`<datalist id="dl-infrastructure">${CODE_OPTIONS.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
   return out.join('');
 }
-// ───────────── 1.20: hints from the address book (new ticket only) ─────────────
+// ───────────── 1.20: hints from the address book (1.21: also in an existing ticket + «חפש במאגר») ─────────────
 function addrHook() {
   const box = document.createElement('div');
   box.id = 'addrbox'; box.className = 'addrbox hidden';
   const after = $('#f-cabinet'); if (!after) return;
-  after.after(box);
-  let timer = null, seq = 0, mode = '';
-  const kick = m => { mode = m; clearTimeout(timer); timer = setTimeout(run, 350); };
+  const find = document.createElement('button');
+  find.id = 'addrfind'; find.className = 'btn addrfind'; find.type = 'button'; find.textContent = 'חפש במאגר הכתובות';
+  after.after(find); find.after(box);
+  let timer = null, seq = 0, mode = '', manual = false;
+  const kick = m => { mode = m; manual = false; clearTimeout(timer); timer = setTimeout(run, 350); };
+  find.onclick = e => {           // search with what the card holds now: ארונית first, otherwise רחוב + בית
+    e.preventDefault(); const v = values();
+    if (norm(v.cabinet).length >= 2) mode = 'cabinet';
+    else if (norm(v.street).length >= 2) mode = 'address';
+    else { toast('כדי לחפש במאגר מלא «ארונית» או «רחוב»'); return; }
+    clearTimeout(timer); manual = true; run();
+  };
   ['street', 'house'].forEach(c => inputOf(c) && inputOf(c).addEventListener('input', () => kick('address')));
   if (inputOf('cabinet')) inputOf('cabinet').addEventListener('input', () => kick('cabinet'));
   async function run() {
+    if (!S.card || !document.body.contains(box)) return;      // the card was closed meanwhile
     const my = ++seq, v = values(), city = normCity(v.city);
     let args = null;
     if (mode === 'cabinet') { if (norm(v.cabinet).length >= 2) args = [city, '', '', norm(v.cabinet)]; }
@@ -813,7 +823,7 @@ function addrHook() {
     let rows = [];
     if (args) { try { rows = await S.cloud.addrSearch(...args); } catch { rows = []; } }
     if (my !== seq || !document.body.contains(box)) return;
-    if (rows === null) { S.addrOff = true; box.remove(); return; }
+    if (rows === null) { S.addrOff = true; box.remove(); find.remove(); return; }
     const seen = new Set(), items = [];
     for (const r of rows) { const k = [r.city, r.site, r.cabinet, r.street, r.house, r.entrance].join('|'); if (!seen.has(k)) { seen.add(k); items.push(r); } if (items.length >= 20) break; }
     const iso = x => `<bdi dir="ltr">${esc(x)}</bdi>`;
@@ -821,15 +831,15 @@ function addrHook() {
       const addr = [r.street, r.house].filter(Boolean).join(' ') + (r.entrance ? ' כניסה ' + r.entrance : '');
       const low = [esc(r.city), r.site ? iso(r.site) : '', r.signal ? iso('Signal ' + r.signal) : '', r.drop_status ? 'דרופ: ' + esc(r.drop_status) : ''].filter(Boolean).join(' · ');
       return `<button class="addritem" data-i="${i}"><b>ארונית ${iso(r.cabinet || '—')} · ${esc(addr || '—')}</b><span>${low}</span></button>`;
-    }).join('') : '';
-    box.classList.toggle('hidden', !items.length);
+    }).join('') : (manual ? `<div class="addrhead">מאגר הכתובות — לא נמצאו התאמות</div>` : '');
+    box.classList.toggle('hidden', !items.length && !manual);
     box.querySelectorAll('[data-i]').forEach(b => b.onclick = e => { e.preventDefault(); pick(items[+b.dataset.i]); });
   }
   function pick(r) {          // עיר (only if empty), מתחם, רחוב, בית, כניסה, ארונית — Signal / דרופ are not written
     const set = (c, val) => { const el = inputOf(c); if (el && val) { el.value = val; onEdit(c); } };
     if (!norm(inputOf('city') && inputOf('city').value)) set('city', r.city);
     set('site', r.site); set('street', r.street); set('house', r.house); set('entrance', r.entrance); set('cabinet', r.cabinet);
-    seq++; box.classList.add('hidden'); box.innerHTML = '';
+    seq++; manual = false; box.classList.add('hidden'); box.innerHTML = '';
     toast('הכתובת מולאה מהמאגר');
   }
 }
@@ -849,7 +859,7 @@ function renderCard() {
     <div class="bottom"><button class="btn goback" id="back2" aria-label="חזרה">→ חזרה</button><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
   $('#back').onclick = closeCard;
   $('#back2').onclick = closeCard;
-  if (isNew && !S.readonly && !S.addrOff) addrHook();
+  if (!S.readonly && !S.addrOff) addrHook();          // 1.21: new and existing tickets
   if ($('#hist')) $('#hist').onclick = () => showHistory(c.id);
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
@@ -1039,15 +1049,15 @@ function applyRow(row) {
 // ───────────── WhatsApp / history / settings ─────────────
 function message(v) {             // same as the desktop (10.25): only fields with V (admin's choice), table order
   const off = new Set(S.waOff || []), lines = [];
-  const cols = COLS.filter(c => norm(v[c]) && !off.has(LABEL[c]));
+  const cols = COLS.filter(c => !off.has(LABEL[c]));    // 1.21 / 10.33: a field with V goes also when empty
   // no icon: WhatsApp Web/Desktop turns emoji that come through wa.me into «�»; RLM keeps the line on the right
-  if (cols.includes('fdt')) lines.push(`*מס' טיקט: ${norm(v.fdt)}*`, '\u200f━━━━━━━━━━━━');
+  if (cols.includes('fdt') && norm(v.fdt)) lines.push(`*מס' טיקט: ${norm(v.fdt)}*`, '\u200f━━━━━━━━━━━━');
   for (const c of cols) {
     if (c === 'fdt') continue;
     const parts = String(v[c]).split('\n').map(x => x.trim()).filter(Boolean);
     let first = parts[0] || '';
     if (first && !/[\u0590-\u05ff]/.test(first)) first = '\u2066' + first + '\u2069';     // date / code keeps its own order
-    lines.push(`*${LABEL[c]}:* ${first}`, ...parts.slice(1).map(x => '\u200f' + x));   // *…* = bold in WhatsApp
+    lines.push(first ? `*${LABEL[c]}:* ${first}` : `*${LABEL[c]}:*`, ...parts.slice(1).map(x => '\u200f' + x));   // *…* = bold in WhatsApp
   }
   return lines.join('\n'); }
 async function whatsapp() {
