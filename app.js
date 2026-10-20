@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.23';
+const APP_VERSION = 'mobile 1.24';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -903,6 +903,12 @@ function onEdit(col) {
     if (st === 'finish' && cd && !norm(cd.value)) { cd.value = nowText(); toast('תאריך סגירה מולא: ' + cd.value); }
   }
   if (DATE_COLS.has(col)) { const el = inputOf(col); el.classList.toggle('bad', !!norm(el.value) && !parseDate(el.value)); }
+  if ((col === 'contractor' || col === 'escalation_date') && !S.readonly) {   // 1.24 / 10.38: technician + date → בעבודה
+    const st = inputOf('status'), k = inputOf('contractor'), d = inputOf('escalation_date');
+    if (st && k && d && norm(k.value) && parseDate(d.value) && (!norm(st.value) || stClass({status: st.value, close_date: ''}) === 'wait')) {
+      st.value = 'בעבודה'; toast('סטטוס: בעבודה');
+    }
+  }
   if (col === 'fdt') { const el = inputOf('fdt'); el.classList.toggle('bad', isDupFdt(el.value)); }
   updateSave();
   const dirty = changedCols(values()).length > 0;
