@@ -128,3 +128,4 @@ body.noscroll{overflow:hidden}
 .addritem b{display:block;font-size:15px;color:#263445}.addritem span{display:block;font-size:12.5px;color:#6b7785;margin-top:2px}
 
 .addrfind{display:block;width:100%;margin:6px 0 2px;padding:9px 10px;font-size:14px;background:#fff8e6;border:1px solid #e7c873;color:#6b4e00;border-radius:10px}
+.wazebtn{display:block;margin-top:6px;padding:5px 10px;border-radius:8px;background:#e6f6fd;border:1px solid #33ccff;color:#0b6a8f;font-size:12.5px;font-weight:700}
