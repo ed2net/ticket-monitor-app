@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.22';
+const APP_VERSION = 'mobile 1.23';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -828,13 +828,16 @@ function addrHook() {
     const seen = new Set(), items = [];
     for (const r of rows) { const k = [r.city, r.site, r.cabinet, r.street, r.house, r.entrance].join('|'); if (!seen.has(k)) { seen.add(k); items.push(r); } if (items.length >= 20) break; }
     const iso = x => `<bdi dir="ltr">${esc(x)}</bdi>`;
-    box.innerHTML = items.length ? `<div class="addrhead">מאגר הכתובות — ${items.length} התאמות · הקש למילוי</div>` + items.map((r, i) => {
+    const x = '<button class="addrx" id="addrx" type="button" aria-label="סגור">✕</button>';     // 1.23: close the hints
+    box.innerHTML = items.length ? `<div class="addrhead">${x}מאגר הכתובות — ${items.length} התאמות · הקש למילוי</div>` + items.map((r, i) => {
       const addr = [r.street, r.house].filter(Boolean).join(' ') + (r.entrance ? ' כניסה ' + r.entrance : '');
       const low = [esc(r.city), r.site ? iso(r.site) : '', r.signal ? iso('Signal ' + r.signal) : '', r.drop_status ? 'דרופ: ' + esc(r.drop_status) : ''].filter(Boolean).join(' · ');
       return `<button class="addritem" data-i="${i}"><b>ארונית ${iso(r.cabinet || '—')} · ${esc(addr || '—')}</b><span>${low}</span></button>`;
-    }).join('') : (manual ? `<div class="addrhead">מאגר הכתובות — לא נמצאו התאמות</div>` : '');
+    }).join('') : (manual ? `<div class="addrhead">${x}מאגר הכתובות — לא נמצאו התאמות</div>` : '');
     box.classList.toggle('hidden', !items.length && !manual);
     box.querySelectorAll('[data-i]').forEach(b => b.onclick = e => { e.preventDefault(); pick(items[+b.dataset.i]); });
+    const xb = box.querySelector('#addrx');
+    if (xb) xb.onclick = e => { e.preventDefault(); clearTimeout(timer); seq++; manual = false; box.classList.add('hidden'); box.innerHTML = ''; };
   }
   function pick(r) {          // עיר (only if empty), מתחם, רחוב, בית, כניסה, ארונית — Signal / דרופ are not written
     const set = (c, val) => { const el = inputOf(c); if (el && val) { el.value = val; onEdit(c); } };
