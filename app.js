@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.24';
+const APP_VERSION = 'mobile 1.25';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -764,7 +764,7 @@ function renderListBody() {
 // ───────────── card ─────────────
 function openCard(id) {
   const rec = id == null ? null : S.recs.get(id);
-  const vals = rec ? Object.fromEntries(COLS.map(c => [c, rec[c]])) : Object.fromEntries(COLS.map(c => [c, '']));
+  const vals = rec ? Object.fromEntries(COLS.map(c => [c, rec[c]])) : Object.fromEntries(COLS.map(c => [c, c === 'status' ? 'בהמתנה' : '']));   // 1.25: new = בהמתנה
   S.card = {id, rec: rec ? {...rec} : null, before: vals, remote: null, deleted: false, dirty: false, extra: id == null};
   S.view = 'card';
   renderCard();
@@ -892,6 +892,17 @@ function renderCard() {
 const inputOf = c => document.querySelector(`[data-c="${c}"]`);
 function values() { const v = {}; for (const c of COLS) { const el = inputOf(c); v[c] = el ? norm(el.value) : S.card.before[c]; } return v; }
 function changedCols(v) { return COLS.filter(c => norm(v[c]) !== norm(S.card.before[c])); }
+// 1.25 / 10.39: תאריך סגירה → FINISH; otherwise קבלן מבצע + תאריך הקפצה → בעבודה, without them → בהמתנה.
+// Only empty / בהמתנה / בעבודה switch; FINISH goes back only when תאריך סגירה is cleared; המשך טיפול stays. null = leave.
+function autoStatus(status, contractor, bump, close, closing) {
+  const st = norm(status), cat = st ? stClass({status: st, close_date: ''}) : '';
+  if (parseDate(close)) return cat !== 'finish' ? 'FINISH' : null;
+  if (cat === 'finish' && !(closing && !norm(close))) return null;
+  if (!['', 'wait', 'work', 'finish'].includes(cat)) return null;
+  const want = norm(contractor) && parseDate(bump) ? 'בעבודה' : 'בהמתנה';
+  if ((cat === 'work' && want === 'בעבודה') || (cat === 'wait' && want === 'בהמתנה')) return null;
+  return want;
+}
 function onEdit(col) {
   const c = S.card;
   if (col === 'city') { const dl = $('#dl-site'); if (dl) dl.innerHTML = lookupValues('site', normCity(inputOf('city').value)).map(v => `<option value="${esc(v)}">`).join(''); }
@@ -903,11 +914,10 @@ function onEdit(col) {
     if (st === 'finish' && cd && !norm(cd.value)) { cd.value = nowText(); toast('תאריך סגירה מולא: ' + cd.value); }
   }
   if (DATE_COLS.has(col)) { const el = inputOf(col); el.classList.toggle('bad', !!norm(el.value) && !parseDate(el.value)); }
-  if ((col === 'contractor' || col === 'escalation_date') && !S.readonly) {   // 1.24 / 10.38: technician + date → בעבודה
-    const st = inputOf('status'), k = inputOf('contractor'), d = inputOf('escalation_date');
-    if (st && k && d && norm(k.value) && parseDate(d.value) && (!norm(st.value) || stClass({status: st.value, close_date: ''}) === 'wait')) {
-      st.value = 'בעבודה'; toast('סטטוס: בעבודה');
-    }
+  if ((col === 'contractor' || col === 'escalation_date' || col === 'close_date') && !S.readonly) {   // 1.24–1.25 / 10.38–10.39
+    const st = inputOf('status'), v = values();
+    const want = st && autoStatus(v.status, v.contractor, v.escalation_date, v.close_date, col === 'close_date');
+    if (want && want !== norm(st.value)) { st.value = want; toast('סטטוס: ' + want); }
   }
   if (col === 'fdt') { const el = inputOf('fdt'); el.classList.toggle('bad', isDupFdt(el.value)); }
   updateSave();
