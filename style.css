@@ -135,6 +135,7 @@ body.noscroll{overflow:hidden}
 /* 1.27 / 10.47: light card colour by filter; בהמתנה none; opened today = orange */
 .card.st-finish:not(.edit):not(.view){background:#ecf7ef}.card.st-work:not(.edit):not(.view){background:#ebf3fd}.card.st-cont:not(.edit):not(.view){background:#eff0f2}.card.today:not(.edit):not(.view){background:#fff1de}
 
-/* 1.28: fields with V (they go into the WhatsApp message) — light green while still EMPTY, like the desktop 10.48 */
-.f.vm input:placeholder-shown:not([type=date]):not([type=datetime-local]),.f.vm textarea:placeholder-shown{background:#eef9f0;border-color:#93cc9f}
-.f.vm input:focus,.f.vm textarea:focus{background:#fff;border-color:#7fa9cf}
+/* 1.29 / 10.49: required fields while EMPTY — green = needed when opening, orange = needed to close (after the ticket is saved) */
+.f.rq-open input:placeholder-shown:not([type=date]):not([type=datetime-local]),.f.rq-open textarea:placeholder-shown{background:#eef9f0;border-color:#93cc9f}
+.closing .f.rq-close input:placeholder-shown:not([type=date]):not([type=datetime-local]),.closing .f.rq-close textarea:placeholder-shown{background:#fff2e0;border-color:#efb468}
+.f input:focus,.f textarea:focus{background:#fff;border-color:#7fa9cf}

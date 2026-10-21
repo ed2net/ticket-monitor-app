@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.28';
+const APP_VERSION = 'mobile 1.29';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -523,7 +523,7 @@ async function renderLogin(msg) {
 // ───────────── fast start: show the saved copy at once, then only the changes are downloaded ─────────────
 function usableCache(c) { return !!(c && c.uid && c.uid === S.session.uid && c.tm && c.lm && Array.isArray(c.rows)); }
 function loadFromCache(cache) {
-  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.role = cache.role || 'user';
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.role = cache.role || 'user';
   S.raw = new Map((cache.rows || []).map(r => [+r.id, r]));
   S.recs = new Map([...S.raw.values()].map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
   S.tm = cache.tm || ''; S.lm = cache.lm || ''; S.cacheAt = cache.saved_text || '';
@@ -569,7 +569,7 @@ async function enterOnline() {
 }
 function enterOffline(cache) {
   S.readonly = true; S.view = 'list'; S.cacheAt = cache.saved_text || '';
-  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || [];
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null;
   S.recs = new Map((cache.rows || []).map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
   S.loaded = true;
   renderList();
@@ -597,6 +597,21 @@ function setProfiles(ps) {
 async function loadWaSetting() {  // WhatsApp fields without V — chosen by the admin in the desktop card, same for everybody
   const v = await S.cloud.loadSetting('wa_unchecked');
   if (Array.isArray(v)) S.waOff = v;
+  try { const r = await S.cloud.loadSetting('req_fields'); if (Array.isArray(r)) S.req = r; } catch {}   // 1.29
+}
+// 1.29 / 10.49: required fields — empty ones are coloured: green = needed when opening, orange = needed to close
+const REQ_OPEN_DEFAULT = ["מס' טיקט FDT", 'עיר', 'מתחם', 'רחוב', 'בית', 'ארונית', 'סוג העבודה', 'זיהוי תקלה'];
+const REQ_CLOSE_DEFAULT = ['קבלן מבצע', 'סוג סגירת התקלה', 'קוד תקלה', 'תאריך סגירה', 'פתרון'];
+function reqFields() {
+  if (!Array.isArray(S.req)) return {open: new Set(REQ_OPEN_DEFAULT), close: new Set(REQ_CLOSE_DEFAULT)};
+  const out = {open: new Set(), close: new Set()};
+  for (const x of S.req) { const i = String(x).indexOf(':'); const k = String(x).slice(0, i); if (out[k]) out[k].add(String(x).slice(i + 1)); }
+  return out;
+}
+function markClosing() {            // the closing fields count once the ticket is saved (or is being closed right away)
+  const form = document.querySelector('.form'); if (!form || !S.card) return;
+  const cd = inputOf('close_date'), st = inputOf('status');
+  form.classList.toggle('closing', S.card.id != null || !!(cd && norm(cd.value)) || !!(st && norm(st.value) === 'FINISH'));
 }
 let cacheTimer = null;
 function saveCache() {
@@ -604,7 +619,7 @@ function saveCache() {
   cacheTimer = setTimeout(() => {
     if (S.readonly || !S.loaded) return;
     kv.set('cache', {saved_text: nowText(), at: Date.now(), uid: S.cloud.user.id || '', role: S.role, tm: S.tm, lm: S.lm,
-      names: S.names, waOff: S.waOff || [], lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
+      names: S.names, waOff: S.waOff || [], req: S.req || null, lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
   }, 3000);
 }
 function startLive() {
@@ -781,7 +796,7 @@ function fieldHtml(c) {
   const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
   const fiber = c === 'solution' && !S.readonly ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
     : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>' : '';     // 1.22 Waze, 1.26 Google Maps
-  const vm = (S.waOff || []).includes(LABEL[c]) ? '' : ' vm';     // 1.28: a field with V is lightly green while still empty
+  const req = reqFields(), vm = req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.29: required fields
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
 }
 function datalists() {
@@ -927,6 +942,7 @@ function onEdit(col) {
   if (dirty !== c.dirty) { c.dirty = dirty; track(); renderOthersBar(); }
 }
 function updateSave() {
+  markClosing();
   const v = values(), ch = new Set(changedCols(v));
   for (const c of COLS) { const f = $('#f-' + c); if (f) f.classList.toggle('changed', ch.has(c)); }
   const b = $('#save');
