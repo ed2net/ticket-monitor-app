@@ -134,3 +134,7 @@ body.noscroll{overflow:hidden}
 .gmapsbtn{display:inline-block;padding:5px 10px;border-radius:8px;background:#eaf3ea;border:1px solid #34a853;color:#1e7b34;font-size:12.5px;font-weight:700}
 /* 1.27 / 10.47: light card colour by filter; בהמתנה none; opened today = orange */
 .card.st-finish:not(.edit):not(.view){background:#ecf7ef}.card.st-work:not(.edit):not(.view){background:#ebf3fd}.card.st-cont:not(.edit):not(.view){background:#eff0f2}.card.today:not(.edit):not(.view){background:#fff1de}
+
+/* 1.28: fields with V (they go into the WhatsApp message) — light green while still EMPTY, like the desktop 10.48 */
+.f.vm input:placeholder-shown:not([type=date]):not([type=datetime-local]),.f.vm textarea:placeholder-shown{background:#eef9f0;border-color:#93cc9f}
+.f.vm input:focus,.f.vm textarea:focus{background:#fff;border-color:#7fa9cf}
