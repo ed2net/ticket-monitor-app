@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.32';
+const APP_VERSION = 'mobile 1.33';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -745,7 +745,7 @@ function filtered() {
   let rows = [...S.recs.values()];
   const words = S.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) rows = rows.filter(r => words.every(w => r._s.includes(w)));
-  const isToday = r => (r.entry_date || '').startsWith(today);
+  const isToday = r => stClass(r) !== 'finish' && (r.entry_date || '').startsWith(today);   // 1.33: a closed ticket leaves «נפתחו היום»
   const n = {all: rows.length, finish: 0, wait: 0, work: 0, cont: 0, other: 0, today: 0};      // numbers on the buttons
   for (const r of rows) { n[stClass(r)]++; if (isToday(r)) n.today++; }
   S.chipCounts = n;
