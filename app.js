@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.25';
+const APP_VERSION = 'mobile 1.26';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -780,7 +780,7 @@ function fieldHtml(c) {
     : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? `inputmode="numeric" placeholder="${DATE_ONLY.has(c) ? 'dd/mm/yyyy' : 'dd/mm/yyyy HH:MM'}"` : ''} autocomplete="off">`;
   const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
   const fiber = c === 'solution' && !S.readonly ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
-    : c === 'street' ? '<button class="wazebtn" id="wazebtn" type="button">Waze</button>' : '';     // 1.22: navigation
+    : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>' : '';     // 1.22 Waze, 1.26 Google Maps
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
 }
 function datalists() {
@@ -872,6 +872,7 @@ function renderCard() {
   if (inputOf('fault')) inputOf('fault').addEventListener('change', faultChanged);
   if ($('#fiberbtn')) $('#fiberbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); fiberForm(); };
   if ($('#wazebtn')) $('#wazebtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openWaze(); };
+  if ($('#gmapsbtn')) $('#gmapsbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openGmaps(); };
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
     const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
@@ -1072,6 +1073,16 @@ function wazeUrl(v) {            // 1.22 / 10.36: רחוב + בית + עיר →
   const street = norm(v.street); if (!street) return '';
   const addr = [street, norm(v.house)].filter(Boolean).join(' '), city = normCity(v.city);
   return 'https://waze.com/ul?q=' + encodeURIComponent(city ? `${addr}, ${city}` : addr) + '&navigate=yes';
+}
+function gmapsUrl(v) {           // 1.26 / 10.43: Google Maps search; '' without a street
+  const street = norm(v.street); if (!street) return '';
+  const addr = [street, norm(v.house)].filter(Boolean).join(' '), city = normCity(v.city);
+  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(city ? `${addr}, ${city}` : addr);
+}
+function openGmaps() {
+  const url = gmapsUrl(values());
+  if (!url) { toast('אין כתובת: מלא «רחוב»'); return; }
+  window.open(url, '_blank');
 }
 function openWaze() {
   const url = wazeUrl(values());
