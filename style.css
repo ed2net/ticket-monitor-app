@@ -139,3 +139,6 @@ body.noscroll{overflow:hidden}
 .f.rq-open input:placeholder-shown:not([type=date]):not([type=datetime-local]),.f.rq-open textarea:placeholder-shown{background:#eef9f0;border-color:#93cc9f}
 .closing .f.rq-close input:placeholder-shown:not([type=date]):not([type=datetime-local]),.closing .f.rq-close textarea:placeholder-shown{background:#fff2e0;border-color:#efb468}
 .f input:focus,.f textarea:focus{background:#fff;border-color:#7fa9cf}
+/* 1.34 / 10.55: «באיחור» — red button, red mark on the card */
+.chip.c-late{color:#c62828;border-color:#c62828;background:#fff}.chip.on.c-late{background:#c62828;border-color:#c62828;color:#fff}
+.card.late{box-shadow:inset -5px 0 0 #c62828}.latemark{color:#c62828;margin-left:4px}

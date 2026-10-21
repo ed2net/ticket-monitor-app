@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.33';
+const APP_VERSION = 'mobile 1.34';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -92,7 +92,7 @@ function recToDb(vals, cols) {
   return o;
 }
 // 1.14: status groups and filter buttons — same colours as the computer (10.20)
-const CHIPS = [['all', 'הכל'], ['finish', 'FINISH'], ['wait', 'בהמתנה'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום']];
+const CHIPS = [['all', 'הכל'], ['finish', 'FINISH'], ['wait', 'בהמתנה'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום'], ['late', 'באיחור']];   // 1.34: «באיחור»
 function savedChip() { try { const c = localStorage.getItem('tm_chip'); return CHIPS.some(x => x[0] === c) ? c : 'all'; } catch { return 'all'; } }
 function stClass(r) {
   const s = (r.status || '').toLowerCase();
@@ -740,16 +740,29 @@ function renderList() {
   if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(() => kv.get('cache')).then(c => usableCache(c) ? quickStart(c) : enterOnline()).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('')); } else renderLogin(''); };
   renderListBody();
 }
+// 1.34 / 10.55: בהמתנה / בעבודה longer than N hours (admin's choice, default 48) since תאריך כניסה
+function lateHours() {
+  const x = (Array.isArray(S.req) ? S.req : []).find(v => String(v).startsWith('late:'));
+  const h = x ? parseInt(String(x).slice(5), 10) : NaN;
+  return h > 0 ? h : 48;
+}
+function isLate(r) {
+  const st = stClass(r);
+  if (st !== 'wait' && st !== 'work') return false;
+  const d = parseDate(r.entry_date);
+  return !!d && Date.now() - d.getTime() > lateHours() * 3600e3;
+}
 function filtered() {
   const today = nowText().slice(0, 10);
   let rows = [...S.recs.values()];
   const words = S.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) rows = rows.filter(r => words.every(w => r._s.includes(w)));
   const isToday = r => stClass(r) !== 'finish' && (r.entry_date || '').startsWith(today);   // 1.33: a closed ticket leaves «נפתחו היום»
-  const n = {all: rows.length, finish: 0, wait: 0, work: 0, cont: 0, other: 0, today: 0};      // numbers on the buttons
-  for (const r of rows) { n[stClass(r)]++; if (isToday(r)) n.today++; }
+  const n = {all: rows.length, finish: 0, wait: 0, work: 0, cont: 0, other: 0, today: 0, late: 0};      // numbers on the buttons
+  for (const r of rows) { n[stClass(r)]++; if (isToday(r)) n.today++; if (isLate(r)) n.late++; }
   S.chipCounts = n;
   if (S.chip === 'today') rows = rows.filter(isToday);
+  else if (S.chip === 'late') rows = rows.filter(isLate);
   else if (S.chip !== 'all') rows = rows.filter(r => stClass(r) === S.chip);
   return rows.sort((a, b) => b.id - a.id);
 }
@@ -764,8 +777,8 @@ function renderListBody() {
     const st = stClass(r), o = open[r.id];
     const addr = [r.city, [r.street, r.house].filter(Boolean).join(' '), r.cabinet ? 'ארונית ' + r.cabinet : ''].filter(Boolean).join(' · ');
     const left = [r.fault, r.contractor].filter(Boolean).join(' · ');
-    return `<button class="card st-${st}${!['finish', 'work', 'cont'].includes(st) && (r.entry_date || '').startsWith(today) ? ' today' : ''} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
-      <div class="row1"><span class="fdt f-${st}">${esc(r.fdt)}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
+    return `<button class="card st-${st}${!['finish', 'work', 'cont'].includes(st) && (r.entry_date || '').startsWith(today) ? ' today' : ''}${isLate(r) ? ' late' : ''} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
+      <div class="row1"><span class="fdt f-${st}">${isLate(r) ? '<span class="latemark">⏱</span>' : ''}${esc(r.fdt)}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
       <div class="addr">${esc(addr) || '—'}</div>
       <div class="meta"><span>${esc(left)}</span><span dir="ltr">${esc(r.entry_date.slice(0, 5) + (r.entry_date.length > 10 ? r.entry_date.slice(10) : ''))}</span></div>
       ${o ? `<div class="who">${o.edit ? '✎ ' + esc(o.names.join(', ')) + ' עורך/ת את הטיקט כרגע' : '👁 ' + esc(o.names.join(', ')) + ' צופה בטיקט'}</div>` : ''}
