@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.34';
+const APP_VERSION = 'mobile 1.35';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -611,7 +611,7 @@ function reqFields() {
 function markClosing() {            // the closing fields count once the ticket is saved (or is being closed right away)
   const form = document.querySelector('.form'); if (!form || !S.card) return;
   const cd = inputOf('close_date'), st = inputOf('status');
-  form.classList.toggle('closing', S.card.id != null || !!(cd && norm(cd.value)) || !!(st && norm(st.value) === 'FINISH'));
+  form.classList.toggle('closing', S.card.id != null || !!(cd && norm(cd.value)) || !!(st && stClass({status: st.value, close_date: ''}) === 'finish'));   // 1.35: Finish / סגור too
 }
 let cacheTimer = null;
 function saveCache() {
