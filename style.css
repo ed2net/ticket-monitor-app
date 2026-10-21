@@ -27,13 +27,13 @@ input,select,textarea{font:inherit;color:var(--ink)}
 .count{font-size:12px;color:var(--quiet);padding:0 16px 6px}
 .list{padding:0 12px 96px}
 .card{display:block;width:100%;text-align:right;background:#fff;border-radius:14px;padding:11px 13px;margin-bottom:9px;box-shadow:0 1px 2px rgba(0,0,0,.08);border-right:5px solid var(--line)}
-.card.st-wait{border-right-color:#c53b3b}.card.st-cont{border-right-color:#c7700e}.card.st-work{border-right-color:#2b6fc2}.card.st-finish{border-right-color:#25864a}.card.st-other{border-right-color:#9aa5b1}
+.card.st-wait{border-right-color:#2f343b}.card.st-cont{border-right-color:#7b8794}.card.st-work{border-right-color:#2b6fc2}.card.st-finish{border-right-color:#25864a}.card.st-other{border-right-color:#9aa5b1}
 .card.edit{background:#fff8ea}.card.view{background:#eef4ff}
 .row1{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .fdt{font-weight:700;font-size:15.5px;direction:ltr;unicode-bidi:isolate}
 .badge{font-size:11.5px;border-radius:10px;padding:2px 9px;font-weight:600;white-space:nowrap;max-width:50%;overflow:hidden;text-overflow:ellipsis}
-.b-wait{background:#fde7e7;color:#a12f2f}.b-cont{background:#fff0da;color:#9a5608}.b-work{background:#e2eefc;color:#22599d}.b-finish{background:#e1f3e7;color:#1e6b3a}.b-other{background:#eef1f4;color:#5b6672}
-.fdt.f-wait{color:#c53b3b}.fdt.f-cont{color:#c7700e}.fdt.f-work{color:#2b6fc2}.fdt.f-finish{color:#25864a}
+.b-wait{background:#eef1f4;color:#2f343b}.b-cont{background:#eff0f2;color:#5f6b78}.b-work{background:#e2eefc;color:#22599d}.b-finish{background:#e1f3e7;color:#1e6b3a}.b-other{background:#eef1f4;color:#5b6672}
+.fdt.f-wait{color:#2f343b}.fdt.f-cont{color:#7b8794}.fdt.f-work{color:#2b6fc2}.fdt.f-finish{color:#25864a}
 .addr{font-size:13.5px;margin-top:4px}
 .meta{font-size:12px;color:var(--quiet);margin-top:3px;display:flex;justify-content:space-between;gap:8px}
 .who{font-size:11.5px;color:#9a5b00;margin-top:4px;font-weight:600}
@@ -114,11 +114,11 @@ body.noscroll{overflow:hidden}
 .back{font-size:26px;padding:0 8px}
 /* 1.14: coloured status buttons with numbers (same colours as the computer) */
 .chip b{font-weight:800;margin-right:3px}
-.chip.c-wait{color:#c53b3b;border-color:#c53b3b;background:#fde7e7}.chip.c-cont{color:#c7700e;border-color:#c7700e;background:#fff0da}
+.chip.c-wait{color:#2f343b;border-color:#c9d0d7;background:#fff}.chip.c-cont{color:#7b8794;border-color:#7b8794;background:#eff0f2}
 .chip.c-work{color:#2b6fc2;border-color:#2b6fc2;background:#e2eefc}.chip.c-finish{color:#25864a;border-color:#25864a;background:#e1f3e7}
-.chip.c-today{color:#5b4bb5;border-color:#a99fe0}
-.chip.on.c-wait{background:#c53b3b;color:#fff}.chip.on.c-cont{background:#c7700e;color:#fff}.chip.on.c-work{background:#2b6fc2;color:#fff}
-.chip.on.c-finish{background:#25864a;color:#fff}.chip.on.c-today{background:#5b4bb5;border-color:#5b4bb5;color:#fff}
+.chip.c-today{color:#c7700e;border-color:#c7700e;background:#fff}
+.chip.on.c-wait{background:#2f343b;border-color:#2f343b;color:#fff}.chip.on.c-cont{background:#7b8794;color:#fff}.chip.on.c-work{background:#2b6fc2;color:#fff}
+.chip.on.c-finish{background:#25864a;color:#fff}.chip.on.c-today{background:#c7700e;border-color:#c7700e;color:#fff}
 .card{border-right-width:7px}
 .chips{flex-wrap:wrap;overflow-x:visible}
 /* 1.20: address book hints */
@@ -132,3 +132,5 @@ body.noscroll{overflow:hidden}
 .addrx{float:left;border:none;background:transparent;color:#6b4e00;font-size:18px;font-weight:700;line-height:1;padding:2px 8px;margin:-2px -2px 0 0}
 .navbtns{display:flex;gap:6px;margin-top:6px}.navbtns .wazebtn{margin-top:0}
 .gmapsbtn{display:inline-block;padding:5px 10px;border-radius:8px;background:#eaf3ea;border:1px solid #34a853;color:#1e7b34;font-size:12.5px;font-weight:700}
+/* 1.27 / 10.47: light card colour by filter; בהמתנה none; opened today = orange */
+.card.st-finish:not(.edit):not(.view){background:#ecf7ef}.card.st-work:not(.edit):not(.view){background:#ebf3fd}.card.st-cont:not(.edit):not(.view){background:#eff0f2}.card.today:not(.edit):not(.view){background:#fff1de}
