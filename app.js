@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.29';
+const APP_VERSION = 'mobile 1.30';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -764,7 +764,7 @@ function renderListBody() {
     const st = stClass(r), o = open[r.id];
     const addr = [r.city, [r.street, r.house].filter(Boolean).join(' '), r.cabinet ? 'ארונית ' + r.cabinet : ''].filter(Boolean).join(' · ');
     const left = [r.fault, r.contractor].filter(Boolean).join(' · ');
-    return `<button class="card st-${st}${(r.entry_date || '').startsWith(today) ? ' today' : ''} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
+    return `<button class="card st-${st}${st !== 'finish' && (r.entry_date || '').startsWith(today) ? ' today' : ''} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
       <div class="row1"><span class="fdt f-${st}">${esc(r.fdt)}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
       <div class="addr">${esc(addr) || '—'}</div>
       <div class="meta"><span>${esc(left)}</span><span dir="ltr">${esc(r.entry_date.slice(0, 5) + (r.entry_date.length > 10 ? r.entry_date.slice(10) : ''))}</span></div>
