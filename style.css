@@ -116,9 +116,9 @@ body.noscroll{overflow:hidden}
 .chip b{font-weight:800;margin-right:3px}
 .chip.c-wait{color:#2f343b;border-color:#c9d0d7;background:#fff}.chip.c-cont{color:#7b8794;border-color:#7b8794;background:#e3e6ea}
 .chip.c-work{color:#2b6fc2;border-color:#2b6fc2;background:#e2eefc}.chip.c-finish{color:#25864a;border-color:#25864a;background:#e1f3e7}
-.chip.c-today{color:#c7700e;border-color:#c7700e;background:#fff}
+.chip.c-today{color:#2f343b;border-color:#c9d0d7;background:#fff}
 .chip.on.c-wait{background:#2f343b;border-color:#2f343b;color:#fff}.chip.on.c-cont{background:#7b8794;color:#fff}.chip.on.c-work{background:#2b6fc2;color:#fff}
-.chip.on.c-finish{background:#25864a;color:#fff}.chip.on.c-today{background:#c7700e;border-color:#c7700e;color:#fff}
+.chip.on.c-finish{background:#25864a;color:#fff}.chip.on.c-today{background:#2f343b;border-color:#2f343b;color:#fff}
 .card{border-right-width:7px}
 .chips{flex-wrap:wrap;overflow-x:visible}
 /* 1.20: address book hints */
@@ -133,7 +133,7 @@ body.noscroll{overflow:hidden}
 .navbtns{display:flex;gap:6px;margin-top:6px}.navbtns .wazebtn{margin-top:0}
 .gmapsbtn{display:inline-block;padding:5px 10px;border-radius:8px;background:#eaf3ea;border:1px solid #34a853;color:#1e7b34;font-size:12.5px;font-weight:700}
 /* 1.27 / 10.47: light card colour by filter; בהמתנה none; opened today = orange */
-.card.st-finish:not(.edit):not(.view){background:#e1f3e7}.card.st-work:not(.edit):not(.view){background:#ebf3fd}.card.st-cont:not(.edit):not(.view){background:#e3e6ea}.card.today:not(.edit):not(.view){background:#fff1de}
+.card.st-finish:not(.edit):not(.view){background:#e1f3e7}.card.st-work:not(.edit):not(.view){background:#ebf3fd}.card.st-cont:not(.edit):not(.view){background:#e3e6ea}
 
 /* 1.29 / 10.49: required fields while EMPTY — green = needed when opening, orange = needed to close (after the ticket is saved) */
 .f.rq-open input:placeholder-shown:not([type=date]):not([type=datetime-local]),.f.rq-open textarea:placeholder-shown{background:#eef9f0;border-color:#93cc9f}
