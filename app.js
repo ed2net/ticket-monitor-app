@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.35';
+const APP_VERSION = 'mobile 1.36';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -19,15 +19,32 @@ const MULTI = new Set(['solution', 'notes']);
 // 1.8: the column that was 'תשתית' (database column infrastructure, always empty) is now 'קוד תקלה', filled from זיהוי תקלה
 const WORK_UNITS = 'לפי יח׳ עבודה';    // was 'יחידות עבודה'
 const CODE_OPTIONS = ['HP 30', 'HP 32', 'HP 33', WORK_UNITS];
-const FAULT_CODES = {'עוצמות אור בארון': ['HP 30'], 'הנגשה': ['HP 32'],
-  'optical issue': ['HP 33', WORK_UNITS], 'onts los': ['HP 33', WORK_UNITS]};
-const FIBER_CABLE_CODE = {F12: 'HP 33', F36: WORK_UNITS, F72: WORK_UNITS, F144: WORK_UNITS, F288: WORK_UNITS};
-function fiberCode(fault, solution) {   // Optical issue / ONTs LOS + קרע סיב: F12 → HP 33, F36…F288 → לפי יח׳ עבודה
-  const opts = faultCodes(fault); if (opts.length < 2) return '';
-  const code = FIBER_CABLE_CODE[((fiberParse(solution) || {}).cable || '').toUpperCase()] || '';
-  return opts.includes(code) ? code : '';
+// 1.36 / 10.58: these lists and rules are edited by the admin (רשימות / ⚙ «קודי תקלה» on the computer), in lookups.
+// The values below are only the defaults while a list has no rows (11_more_lists.sql not run).
+const LIST_DEFAULTS = {code: CODE_OPTIONS, fiber_reason: ['קרע סיב', 'נזק בארונית', 'נשלף מארונית'],
+  fiber_cable: ['F12', 'F36', 'F72', 'F144', 'F288'], fiber_route: ['עילי', 'תת"ק'], fiber_fix: ['החלפה', 'משיכה']};
+const RULE_DEFAULTS = {fault_code: [['HP 30', 'עוצמות אור בארון'], ['HP 32', 'הנגשה'], ['HP 33', 'Optical issue'], ['HP 33', 'ONTs LOS']],
+  fault_cable: [['Optical issue', ''], ['ONTs LOS', '']],
+  cable_code: [['HP 33', 'F12'], [WORK_UNITS, 'F36'], [WORK_UNITS, 'F72'], [WORK_UNITS, 'F144'], [WORK_UNITS, 'F288']]};
+const lookupKey = (a, b) => { const sa = +a.sort || 0, sb = +b.sort || 0;      // manual order (▲▼) first, then A–Z
+  return (sa > 0 ? 0 : 1) - (sb > 0 ? 0 : 1) || sa - sb || String(a.value).localeCompare(String(b.value), 'he'); };
+const cfgRows = kind => (S.lookups || []).filter(l => l.kind === kind && l.value);
+function cfgList(kind) {
+  const rows = cfgRows(kind);
+  if (!rows.length) return [...(LIST_DEFAULTS[kind] || [])];
+  return [...new Set(rows.filter(l => l.active !== false).sort(lookupKey).map(l => l.value))];
 }
-const faultCodes = f => FAULT_CODES[String(f || '').replace(/_/g, ' ').toLowerCase().split(/\s+/).filter(Boolean).join(' ')] || [];
+function cfgRules(kind) {
+  const rows = cfgRows(kind);
+  return rows.length ? rows.filter(l => l.active !== false).map(l => [l.value, l.parent || '']) : RULE_DEFAULTS[kind];
+}
+const fkey = f => String(f || '').replace(/_/g, ' ').toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+const faultCodes = f => { const k = fkey(f); if (!k) return []; const r = cfgRules('fault_code').find(([c, ff]) => c && fkey(ff) === k); return r ? [r[0]] : []; };
+const faultByCable = f => { const k = fkey(f); return !!k && cfgRules('fault_cable').some(([ff]) => fkey(ff) === k); };
+const cableCode = c => { const k = String(c || '').trim().toUpperCase(); const r = cfgRules('cable_code').find(([v, cc]) => v && String(cc).trim().toUpperCase() === k); return r ? r[0] : ''; };
+function fiberCode(fault, solution) {   // the קרע סיב cable decides the code, for the faults where «הכבל קובע»
+  return faultByCable(fault) ? cableCode((fiberParse(solution) || {}).cable) : '';
+}
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
 const NEW_COLS = new Set(['inspector']);      // added later (SQL 06): the app still works on a database without them
@@ -188,7 +205,7 @@ class Cloud {
     }
   }
   loadTickets() { return this.cols(() => this.fetchAll('tickets', 'select=' + sel() + '&order=id')); }
-  loadLookups() { return this.fetchAll('lookups', 'select=id,kind,value,parent,active&order=kind,value'); }
+  loadLookups() { return this.fetchAll('lookups', 'select=id,kind,value,parent,sort,active&order=kind,sort,value'); }
   async loadProfiles() {
     try { return await this.fetchAll('profiles', 'select=id,display_name,role,can_edit_lookups'); }
     catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; return this.fetchAll('profiles', 'select=id,display_name,role'); }
@@ -380,7 +397,7 @@ window.addEventListener('popstate', async () => {
   if (somethingOpen()) guard();
 });
 // ───────────── קרע סיב form (1.9): six fields → one sentence in פתרון ─────────────
-const FIBER = {reason: ['קרע סיב', 'נזק בארונית', 'נשלף מארונית'], cable: ['F12', 'F36', 'F72', 'F144', 'F288'], route: ['עילי', 'תת"ק'], fix: ['החלפה', 'משיכה']};
+const fiberLists = () => ({reason: cfgList('fiber_reason'), cable: cfgList('fiber_cable'), route: cfgList('fiber_route'), fix: cfgList('fiber_fix')});
 function fiberText(d) {        // קרע סיב F12 בין 400-1 לבין 400-2 עילי 100 מטר. בוצע החלפה וחיבור.
   const g = k => String(d[k] || '').trim();
   const parts = [g('reason'), g('cable'), (g('a') || g('b')) ? `בין ${g('a') || '?'} לבין ${g('b') || '?'}` : '', g('route'), g('m') ? `${g('m')} מטר` : ''];
@@ -389,8 +406,14 @@ function fiberText(d) {        // קרע סיב F12 בין 400-1 לבין 400-2 
   if (g('fix')) t = (t ? t + ' ' : '') + `בוצע ${g('fix')} וחיבור.`;
   return t;
 }
-const FIBER_RE = /([^\n.]*?)\s*(F\d+)?\s*(?:בין (\S+) לבין (\S+))?\s*(עילי|תת"ק)?\s*(?:([\d.,]+) מטר)?\.(?:\s*בוצע (\S+) וחיבור\.)?/;
+const reEsc = v => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function fiberRe(F) {
+  const byLen = a => [...a].filter(Boolean).sort((x, y) => y.length - x.length).map(reEsc).join('|');
+  const cab = F.cable.length ? `(?:${byLen(F.cable)}|F\\d+)` : 'F\\d+', rt = byLen(F.route) || '(?!)';
+  return new RegExp(`([^\\n.]*?)\\s*(${cab})?\\s*(?:בין (\\S+) לבין (\\S+))?\\s*(${rt})?\\s*(?:([\\d.,]+) מטר)?\\.(?:\\s*בוצע (\\S+) וחיבור\\.)?`);
+}
 function fiberParse(text) {
+  const FIBER = fiberLists(), FIBER_RE = fiberRe(FIBER);
   for (const line of String(text || '').split('\n')) {
     if (!(line.includes('בין') || FIBER.reason.some(r => line.includes(r)) || FIBER.cable.some(c => line.includes(c)))) continue;
     const m = line.match(FIBER_RE);
@@ -400,7 +423,8 @@ function fiberParse(text) {
 }
 function fiberForm() {
   const ta = inputOf('solution'); if (!ta) return;
-  const d = fiberParse(ta.value) || {reason: 'קרע סיב'};
+  const FIBER = fiberLists();
+  const d = fiberParse(ta.value) || {reason: FIBER.reason[0] || ''};
   const sel = (k, opts) => `<select data-k="${k}"><option value=""></option>${(d[k] && !opts.includes(d[k]) ? [d[k], ...opts] : opts).map(o => `<option${o === d[k] ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
   const s = sheet(`<h3>קרע סיב</h3><div class="fiber">
       <label>מה הסיבה${sel('reason', FIBER.reason)}</label>
@@ -442,7 +466,8 @@ async function faultChanged() {   // עוצמות אור בארון → HP 30, �
   if (S.readonly || !c || !code) return;
   const byCable = fiberCode(fault, (inputOf('solution') || {}).value);
   if (byCable) { if (norm(code.value) !== byCable) { code.value = byCable; onEdit('infrastructure'); } return; }
-  if (!opts.length || opts.includes(norm(code.value))) return;
+  const allowed = opts.concat(faultByCable(fault) ? cfgRules('cable_code').map(r => r[0]) : []);   // 1.36
+  if (!opts.length || allowed.includes(norm(code.value))) return;
   code.value = opts[0]; onEdit('infrastructure');   // Optical issue / ONTs LOS → HP 33 at once, no question
 }
 function ask(title, text, yes = 'כן', no = 'ביטול', danger = false) {
@@ -459,15 +484,14 @@ const errText = e => e instanceof OfflineError ? 'אין חיבור לשרת. ב
 const userName = id => !id ? '—' : (S.names[id] || 'משתמש');
 const myName = () => S.names[S.cloud.user.id] || (S.cloud.user.email || S.session.email || '').split('@')[0] || '—';
 function lookupValues(kind, parent) {
-  const set = new Set();
-  for (const l of S.lookups) if (l.kind === kind && (parent == null || (l.parent || '') === parent) && l.active !== false && l.value) set.add(l.value);
-  return [...set].sort((a, b) => a.localeCompare(b, 'he'));
+  const rows = S.lookups.filter(l => l.kind === kind && (parent == null || (l.parent || '') === parent) && l.active !== false && l.value);
+  return [...new Set(rows.sort(lookupKey).map(l => l.value))];      // 1.36: the admin's order (▲▼), then A–Z
 }
 const groupKey = v => String(v || '').replace(/_/g, ' ').toLowerCase().split(/\s+/).filter(Boolean).join(' ');
 function inspectorValues(channel) {     // מפקח: names for every group + names of this group (נשלח בקבוצה)
-  const key = groupKey(channel), set = new Set();
-  for (const l of S.lookups) if (l.kind === 'inspector' && l.active !== false && l.value && (!l.parent || (key && groupKey(l.parent) === key))) set.add(l.value);
-  return [...set].sort((a, b) => a.localeCompare(b, 'he'));
+  const key = groupKey(channel);
+  const rows = S.lookups.filter(l => l.kind === 'inspector' && l.active !== false && l.value && (!l.parent || (key && groupKey(l.parent) === key)));
+  return [...new Set(rows.sort(lookupKey).map(l => l.value))];
 }
 
 // ───────────── start ─────────────
@@ -822,7 +846,7 @@ function datalists() {
     else vals = lookupValues(kind);
     out.push(`<datalist id="dl-${c}">${vals.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
   }
-  out.push(`<datalist id="dl-infrastructure">${CODE_OPTIONS.map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
+  out.push(`<datalist id="dl-infrastructure">${cfgList('code').map(v => `<option value="${esc(v)}">`).join('')}</datalist>`);
   return out.join('');
 }
 // ───────────── 1.20: hints from the address book (1.21: also in an existing ticket + «חפש במאגר») ─────────────
