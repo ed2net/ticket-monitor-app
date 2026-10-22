@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.37';
+const APP_VERSION = 'mobile 1.38';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -18,12 +18,12 @@ const DATE_ONLY = new Set(['escalation_date']);      // date without time
 const MULTI = new Set(['solution', 'notes']);
 // 1.8: the column that was 'תשתית' (database column infrastructure, always empty) is now 'קוד תקלה', filled from זיהוי תקלה
 const WORK_UNITS = 'לפי יח׳ עבודה';    // was 'יחידות עבודה'
-const CODE_OPTIONS = ['HP 30', 'HP 32', 'HP 33', WORK_UNITS];
+const CODE_OPTIONS = ['HP 30', 'HP 31', 'HP 32', 'HP 33', WORK_UNITS];
 // 1.36 / 10.58: these lists and rules are edited by the admin (רשימות / ⚙ «קודי תקלה» on the computer), in lookups.
 // The values below are only the defaults while a list has no rows (11_more_lists.sql not run).
 const LIST_DEFAULTS = {code: CODE_OPTIONS, fiber_reason: ['קרע סיב', 'נזק בארונית', 'נשלף מארונית'],
   fiber_cable: ['F12', 'F36', 'F72', 'F144', 'F288'], fiber_route: ['עילי', 'תת"ק'], fiber_fix: ['החלפה', 'משיכה']};
-const RULE_DEFAULTS = {fault_code: [['HP 30', 'עוצמות אור בארון'], ['HP 32', 'הנגשה'], ['HP 33', 'Optical issue'], ['HP 33', 'ONTs LOS']],
+const RULE_DEFAULTS = {fault_code: [['HP 30', 'עוצמות אור בארון'], ['HP 31', 'הרחבת ארון ראשי'], ['HP 32', 'הנגשה'], ['HP 33', 'Optical issue'], ['HP 33', 'ONTs LOS']],
   fault_cable: [['Optical issue', ''], ['ONTs LOS', '']],
   cable_code: [['HP 33', 'F12'], [WORK_UNITS, 'F36'], [WORK_UNITS, 'F72'], [WORK_UNITS, 'F144'], [WORK_UNITS, 'F288']]};
 const lookupKey = (a, b) => { const sa = +a.sort || 0, sb = +b.sort || 0;      // manual order (▲▼) first, then A–Z
@@ -461,7 +461,7 @@ function choose(title, text, options) {      // one button per option; resolves 
     s.querySelectorAll('[data-o]').forEach(b => b.onclick = () => { closeSheet.cb = null; closeSheet(); const i = +b.dataset.o; res(i >= 0 ? options[i] : null); });
   });
 }
-async function faultChanged() {   // עוצמות אור בארון → HP 30, הנגשה → HP 32, Optical issue / ONTs LOS → HP 33 or לפי יח׳ עבודה
+async function faultChanged() {   // עוצמות אור בארון → HP 30, הרחבת ארון ראשי → HP 31, הנגשה → HP 32, Optical issue / ONTs LOS → HP 33 or לפי יח׳ עבודה
   const c = S.card, fault = norm((inputOf('fault') || {}).value), opts = faultCodes(fault), code = inputOf('infrastructure');
   if (S.readonly || !c || !code) return;
   const byCable = fiberCode(fault, (inputOf('solution') || {}).value);
