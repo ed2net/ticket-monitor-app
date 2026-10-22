@@ -1,7 +1,7 @@
 // Ticket Monitor mobile: the app itself opens at once from the phone (data lives in IndexedDB, not here).
 // Stale-while-revalidate: the saved copy is shown immediately, a newer version is fetched in the background
 // and is used from the next start.
-const CACHE = 'tm-shell-1.38';
+const CACHE = 'tm-shell-1.39';
 const SHELL = ['./', 'index.html', 'style.css', 'config.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

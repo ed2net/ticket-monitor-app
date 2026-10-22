@@ -142,3 +142,7 @@ body.noscroll{overflow:hidden}
 /* 1.34 / 10.55: «באיחור» — red button, red mark on the card */
 .chip.c-late{color:#c62828;border-color:#c62828;background:#fff}.chip.on.c-late{background:#c62828;border-color:#c62828;color:#fff}
 .card.late{box-shadow:inset -5px 0 0 #c62828}.latemark{color:#c62828;margin-left:4px}
+
+/* 1.39: folder of the מתחם (SharePoint) */
+.folderbtn{display:block;margin-top:6px;padding:5px 8px;border-radius:8px;background:#fff8e1;border:1px solid #d9b44a;color:#5a4300;font-size:12.5px;font-weight:700}
+.folders{display:flex;flex-direction:column;gap:8px;margin:8px 0}.folders a{text-align:center;text-decoration:none;padding:12px 10px;color:#fff}

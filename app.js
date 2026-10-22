@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.38';
+const APP_VERSION = 'mobile 1.39';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -547,7 +547,7 @@ async function renderLogin(msg) {
 // ───────────── fast start: show the saved copy at once, then only the changes are downloaded ─────────────
 function usableCache(c) { return !!(c && c.uid && c.uid === S.session.uid && c.tm && c.lm && Array.isArray(c.rows)); }
 function loadFromCache(cache) {
-  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.role = cache.role || 'user';
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.maps = cache.maps || null; S.role = cache.role || 'user';
   S.raw = new Map((cache.rows || []).map(r => [+r.id, r]));
   S.recs = new Map([...S.raw.values()].map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
   S.tm = cache.tm || ''; S.lm = cache.lm || ''; S.cacheAt = cache.saved_text || '';
@@ -593,7 +593,7 @@ async function enterOnline() {
 }
 function enterOffline(cache) {
   S.readonly = true; S.view = 'list'; S.cacheAt = cache.saved_text || '';
-  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null;
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.maps = cache.maps || null;
   S.recs = new Map((cache.rows || []).map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
   S.loaded = true;
   renderList();
@@ -622,6 +622,7 @@ async function loadWaSetting() {  // WhatsApp fields without V — chosen by the
   const v = await S.cloud.loadSetting('wa_unchecked');
   if (Array.isArray(v)) S.waOff = v;
   try { const r = await S.cloud.loadSetting('req_fields'); if (Array.isArray(r)) S.req = r; } catch {}   // 1.29
+  try { const m = await S.cloud.loadSetting('maps_index'); if (Array.isArray(m)) S.maps = m; } catch {}   // 1.39
 }
 // 1.29 / 10.49: required fields — empty ones are coloured: green = needed when opening, orange = needed to close
 const REQ_OPEN_DEFAULT = ["מס' טיקט FDT", 'עיר', 'מתחם', 'רחוב', 'בית', 'ארונית', 'סוג העבודה', 'זיהוי תקלה'];
@@ -643,7 +644,7 @@ function saveCache() {
   cacheTimer = setTimeout(() => {
     if (S.readonly || !S.loaded) return;
     kv.set('cache', {saved_text: nowText(), at: Date.now(), uid: S.cloud.user.id || '', role: S.role, tm: S.tm, lm: S.lm,
-      names: S.names, waOff: S.waOff || [], req: S.req || null, lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
+      names: S.names, waOff: S.waOff || [], req: S.req || null, maps: S.maps || null, lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
   }, 3000);
 }
 function startLive() {
@@ -832,6 +833,7 @@ function fieldHtml(c) {
     : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? `inputmode="numeric" placeholder="${DATE_ONLY.has(c) ? 'dd/mm/yyyy' : 'dd/mm/yyyy HH:MM'}"` : 'placeholder=" "'} autocomplete="off">`;
   const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
   const fiber = c === 'solution' && !S.readonly ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
+    : c === 'site' ? '<button class="folderbtn" id="folderbtn" type="button">📁 תיקיית מתחם</button>'      // 1.39
     : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>' : '';     // 1.22 Waze, 1.26 Google Maps
   const req = reqFields(), vm = req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.29: required fields
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
@@ -924,6 +926,7 @@ function renderCard() {
   document.querySelectorAll('[data-big]').forEach(el => el.addEventListener('click', () => openTextEditor(el.dataset.big)));
   if (inputOf('fault')) inputOf('fault').addEventListener('change', faultChanged);
   if ($('#fiberbtn')) $('#fiberbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); fiberForm(); };
+  if ($('#folderbtn')) $('#folderbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openSiteFolder(); };
   if ($('#wazebtn')) $('#wazebtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openWaze(); };
   if ($('#gmapsbtn')) $('#gmapsbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openGmaps(); };
   document.querySelectorAll('[data-pick]').forEach(p => {
@@ -1137,6 +1140,61 @@ function openGmaps() {
   const url = gmapsUrl(values());
   if (!url) { toast('אין כתובת: מלא «רחוב»'); return; }
   window.open(url, '_blank');
+}
+// ───────────── 1.39 / 10.64: folder of the מתחם in SharePoint ─────────────
+// The admin's computer sends the list of folders under …\++מפות++\אופטיקה\HOT (app_settings 'maps_index':
+// [library web address, path of HOT inside it, 'city/site', …]); the phone finds the folder like the desktop (tm_maps.py)
+// and opens it on the web (OneDrive app or browser).
+const MAP_SEP = [' ', '_', '(', '.', ' -', '-'];
+const MAP_VER = /[\s_-]*v\d+$/i;
+const mapName = s => String(s || '').replace(/_/g, ' ').split(/\s+/).filter(Boolean).join(' ').toLowerCase();
+function mapsIndex() {
+  const v = S.maps;
+  if (!Array.isArray(v) || v.length < 2 || !v[0]) return null;
+  if (mapsIndex.src !== v) {
+    const idx = new Map(), rels = v.slice(2).filter(Boolean);
+    for (const rel of rels) { const n = rel.split('/').pop().trim().toLowerCase(); if (!idx.has(n)) idx.set(n, []); idx.get(n).push(rel); }
+    mapsIndex.c = {lib: v[0], sub: v[1] || '', idx, all: new Set(rels)}; mapsIndex.src = v;
+  }
+  return mapsIndex.c;
+}
+function siteFolders(site, city) {
+  const m = mapsIndex();
+  site = String(site || '').trim(); city = String(city || '').trim();
+  if (!m || !site) return [];
+  if (city && m.all.has(`${city}/${site}`)) return [`${city}/${site}`];
+  const key = site.toLowerCase(), c = mapName(city);
+  const exact = new Set(m.idx.get(key) || []), loose = new Set();
+  if (!exact.size || c)                         // «GB-HDRA2409 ישן» — the code and then anything
+    for (const [name, ps] of m.idx)
+      if (name.startsWith(key) && MAP_SEP.some(s => name.slice(key.length, key.length + 2).startsWith(s))) ps.forEach(p => loose.add(p));
+  const parent = p => { const a = p.split('/'); return a.length > 1 ? a[a.length - 2] : ''; };
+  const inCity = p => !!c && mapName(parent(p)) === c;
+  let hits = new Set([...exact, ...loose]);
+  if (exact.size && ![...loose].some(inCity)) hits = exact;   // a «code + text» folder counts only in the own city
+  const out = [...hits].sort((a, b) => (inCity(a) ? 0 : 1) - (inCity(b) ? 0 : 1) || (exact.has(a) ? 0 : 1) - (exact.has(b) ? 0 : 1)
+                                    || (a < b ? -1 : a > b ? 1 : 0));
+  const base = site.replace(MAP_VER, '');
+  if (!out.length && base && base !== site) return siteFolders(base, city);   // «GB-NATN016-V2» → «GB-NATN016»
+  return out;
+}
+function folderUrl(rel) {
+  const m = mapsIndex(), u = new URL(m.lib), lib = u.pathname.replace(/\/+$/, '');
+  const id = [decodeURIComponent(lib), m.sub, rel].filter(Boolean).join('/');
+  return `${u.origin}${lib}/Forms/AllItems.aspx?id=${encodeURIComponent(id)}`;
+}
+function openSiteFolder() {
+  const site = ((inputOf('site') || {}).value || '').trim(), city = ((inputOf('city') || {}).value || '').trim();
+  if (!site) { toast('השדה «מתחם» ריק — בחר מתחם קודם.'); return; }
+  if (!mapsIndex()) { toast('רשימת התיקיות עוד לא נשלחה מהמחשב של המנהל.', 4000); return; }
+  const hits = siteFolders(site, city);
+  if (!hits.length) { toast(`לא נמצאה תיקייה בשם ${site}`, 4000); return; }
+  if (hits.length === 1) { window.open(folderUrl(hits[0]), '_blank'); return; }
+  const s = sheet(`<h3>תיקיית מתחם</h3><p>נמצאו כמה תיקיות בשם ${esc(site)}:</p><div class="folders">${hits.map(h =>
+    `<a class="btn dark" target="_blank" rel="noopener" href="${esc(folderUrl(h))}" dir="auto">${esc(h)}</a>`).join('')}</div>
+    <div class="btns"><button class="btn" id="fclose">ביטול</button></div>`);
+  s.querySelectorAll('a').forEach(a => a.addEventListener('click', () => setTimeout(closeSheet, 300)));
+  s.querySelector('#fclose').onclick = closeSheet;
 }
 function openWaze() {
   const url = wazeUrl(values());
