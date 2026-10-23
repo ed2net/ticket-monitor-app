@@ -146,3 +146,22 @@ body.noscroll{overflow:hidden}
 /* 1.39: folder of the מתחם (SharePoint) */
 .folderbtn{display:block;margin-top:6px;padding:5px 8px;border-radius:8px;background:#fff8e1;border:1px solid #d9b44a;color:#5a4300;font-size:12.5px;font-weight:700}
 .folders{display:flex;flex-direction:column;gap:8px;margin:8px 0}.folders a{text-align:center;text-decoration:none;padding:12px 10px;color:#fff}
+
+/* 1.40: long press menu, several tickets */
+.card{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.card.picked{outline:3px solid #c99a00;background:#fff8d6}
+.card.picked .row1::before{content:'☑ ';color:#8a6a00}
+.menu{display:flex;flex-direction:column;gap:7px;margin:8px 0}
+.menu .mi{text-align:right;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:#fff;font-size:15.5px;font-weight:700;color:#263445}
+.menu .mi.wa{background:#e3f6ea;border-color:#57b97c;color:#17663a}
+.menu .mi.cur{background:#eef4ff;border-color:#9db8e0}
+.sheet .sub{color:#6b7785;font-size:13px;margin-top:-4px}
+.pickbar{position:fixed;left:0;right:0;bottom:0;z-index:8;background:#2f343b;color:#fff;padding:10px 12px calc(10px + env(safe-area-inset-bottom));box-shadow:0 -2px 8px rgba(0,0,0,.25)}
+.pk-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:15px}
+.pk-x{background:transparent;color:#fff;border:1px solid #6b7785;border-radius:10px;padding:5px 10px;font-weight:700}
+.pk-btns{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+.pk-btns button{padding:10px 0;border-radius:10px;border:0;background:#fff;color:#263445;font-weight:700;font-size:14.5px}
+.pk-btns button.wa{background:#e3f6ea;color:#17663a}
+.pk-btns button:disabled{opacity:.45}
+.fab.hidden{display:none}
+.list{padding-bottom:110px}

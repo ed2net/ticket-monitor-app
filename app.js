@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.39';
+const APP_VERSION = 'mobile 1.40';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -750,6 +750,7 @@ function refreshLive() {
 // ───────────── list ─────────────
 function renderList() {
   S.view = 'list'; S.card = null; track(); unguard();
+  if ($('#pickbar') && !S.pick) $('#pickbar').remove();
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><button class="icon" id="set">⚙</button></div><div id="pill">${pillHtml()}</div></div>
     ${S.readonly ? `<div class="banner grey">הנתונים מ-<bdi dir="ltr">${esc(S.cacheAt)}</bdi>. אפשר לחפש, לפתוח טיקט, להעתיק ולשלוח ב-WhatsApp. שמירה — כשתחזור הרשת.<br><button id="retry">התחבר שוב</button></div>` : ''}
@@ -810,16 +811,24 @@ function renderListBody() {
     </button>`;
   }).join('') + (rows.length > S.limit ? `<button class="more" id="more">הצג עוד (${rows.length - S.limit})</button>` : '') +
     (!rows.length ? '<div class="loading">אין טיקטים להצגה</div>' : '');
-  list.querySelectorAll('.card').forEach(b => b.onclick = () => openCard(+b.dataset.id));
+  list.querySelectorAll('.card').forEach(b => {
+    const id = +b.dataset.id;
+    if (S.pick && S.pick.has(id)) b.classList.add('picked');
+    b.onclick = () => { if (b._lp) { b._lp = false; return; } if (S.pick) togglePick(id); else openCard(id); };
+    longPress(b, () => { if (S.pick) togglePick(id); else rowMenu(id); });
+  });
+  renderPickBar();
   if ($('#more')) $('#more').onclick = () => { S.limit += 100; renderListBody(); };
 }
 
 // ───────────── card ─────────────
-function openCard(id) {
+function openCard(id, prefill) {
   const rec = id == null ? null : S.recs.get(id);
   const vals = rec ? Object.fromEntries(COLS.map(c => [c, rec[c]])) : Object.fromEntries(COLS.map(c => [c, c === 'status' ? 'בהמתנה' : '']));   // 1.25: new = בהמתנה
+  if (!rec && prefill) for (const c of COLS) if (!DUP_SKIP.has(c) && norm(prefill[c])) vals[c] = prefill[c];      // 1.40: «שכפל»
   S.card = {id, rec: rec ? {...rec} : null, before: vals, remote: null, deleted: false, dirty: false, extra: id == null};
   S.view = 'card';
+  if ($('#pickbar')) $('#pickbar').remove();
   renderCard();
   track();
   guard();
@@ -1195,6 +1204,152 @@ function openSiteFolder() {
     <div class="btns"><button class="btn" id="fclose">ביטול</button></div>`);
   s.querySelectorAll('a').forEach(a => a.addEventListener('click', () => setTimeout(closeSheet, 300)));
   s.querySelector('#fclose').onclick = closeSheet;
+}
+// ───────────── 1.40 / 10.67: long press on a ticket — the same actions as the right click on the computer ─────────────
+const DUP_SKIP = new Set(['fdt', 'entry_date', 'status', 'contractor', 'escalation_date', 'close_type', 'infrastructure',
+                          'close_date', 'solution', 'notes']);
+const WA_MULTI_SEP = '\n\n\u200f= = = = = = = = = = = = = = =\n\n';     // several tickets in one message
+const STATUS_MENU = ['בהמתנה', 'בעבודה', 'המשך טיפול', 'FINISH'];
+function longPress(el, fn, ms = 550) {
+  let t = null, x = 0, y = 0;
+  const stop = () => { clearTimeout(t); t = null; };
+  el.addEventListener('pointerdown', e => { x = e.clientX; y = e.clientY; stop(); el._lp = false; t = setTimeout(() => { t = null; el._lp = true; fn(); }, ms); });
+  el.addEventListener('pointermove', e => { if (t && Math.hypot(e.clientX - x, e.clientY - y) > 10) stop(); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(k => el.addEventListener(k, stop));
+  el.addEventListener('contextmenu', e => { e.preventDefault(); if (!el._lp) { stop(); el._lp = true; fn(); } });
+}
+function statusValues() {
+  return STATUS_MENU.concat(lookupValues('status').filter(v => stClass({status: v, close_date: ''}) === 'other' && !STATUS_MENU.includes(v)));
+}
+const recsMessage = rs => rs.map(r => message(r)).join(WA_MULTI_SEP);
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select();
+          const ok = document.execCommand('copy'); ta.remove(); return ok; }
+}
+async function copyRecs(rs) {
+  if (!S.readonly) { try { await loadWaSetting(); } catch {} }
+  S.copied = rs.map(r => ({...r}));
+  await copyText(recsMessage(rs));
+  toast(rs.length > 1 ? `הועתקו ${rs.length} טיקטים` : `הועתק טיקט ${rs[0].fdt}`);
+}
+async function sendRecs(rs) {
+  if (!S.readonly) { try { await loadWaSetting(); } catch {} }
+  const t = recsMessage(rs);
+  if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank');
+}
+function rowMenu(id) {
+  const r = S.recs.get(id); if (!r) return;
+  const ro = S.readonly;
+  const s = sheet(`<h3>טיקט ${esc(r.fdt)}</h3><p class="sub">${esc([r.city, r.street, r.house].filter(Boolean).join(' '))}</p>
+    <div class="menu">
+      <button class="mi" data-m="open">פתח</button>
+      <button class="mi" data-m="copy">העתק</button>
+      <button class="mi wa" data-m="send">שלח ב-WhatsApp</button>
+      ${ro ? '' : '<button class="mi" data-m="dup">שכפל לטיקט חדש</button><button class="mi" data-m="status">סטטוס ‹</button><button class="mi" data-m="contr">קבלן מבצע ‹</button>'}
+      <button class="mi" data-m="pick">☑ בחר כמה טיקטים</button>
+    </div><div class="btns"><button class="btn" data-m="close">ביטול</button></div>`);
+  s.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
+    const m = b.dataset.m; closeSheet();
+    if (m === 'open') openCard(id);
+    else if (m === 'copy') copyRecs([r]);
+    else if (m === 'send') sendRecs([r]);
+    else if (m === 'dup') { openCard(null, r); faultChanged(); }
+    else if (m === 'status') statusMenu([r]);
+    else if (m === 'contr') contractorMenu([r]);
+    else if (m === 'pick') { S.pick = new Set([id]); renderListBody(); }
+  });
+}
+function pickSheet(title, values, current) {
+  return new Promise(res => {
+    const s = sheet(`<h3>${esc(title)}</h3><div class="menu">${values.map((v, i) =>
+      `<button class="mi${same(v, current) ? ' cur' : ''}" data-i="${i}">${same(v, current) ? '✓ ' : ''}${esc(v)}</button>`).join('')}</div>
+      <div class="btns"><button class="btn" data-i="-1">ביטול</button></div>`);
+    closeSheet.cb = () => res(null);
+    s.querySelectorAll('[data-i]').forEach(b => b.onclick = () => { closeSheet.cb = null; closeSheet(); const i = +b.dataset.i; res(i >= 0 ? values[i] : null); });
+  });
+}
+async function statusMenu(rs) {
+  const v = await pickSheet(rs.length > 1 ? `סטטוס — ${rs.length} טיקטים` : 'סטטוס', statusValues(), rs.length === 1 ? rs[0].status : null);
+  if (v) await setStatusRecs(rs, v);
+}
+async function contractorMenu(rs) {
+  const vals = lookupValues('contractor');
+  if (!vals.length) return info('קבלן מבצע', 'רשימת הקבלנים ריקה.');
+  const v = await pickSheet(rs.length > 1 ? `קבלן מבצע — ${rs.length} טיקטים` : 'קבלן מבצע', vals, rs.length === 1 ? rs[0].contractor : null);
+  if (v) await setContractorRecs(rs, v);
+}
+async function changeRecs(rs, change, title) {
+  // change(rec) → {col: value}; saved one by one like a card save (history, parallel changes). Returns the saved count.
+  if (S.readonly || !rs.length) return 0;
+  const busy = [...new Set(rs.flatMap(r => othersOn(r.id).filter(([, ed]) => ed).map(([n]) => n)))];
+  if (busy.length && !await ask(title, `${busy.join(', ')} עורך/ת כרגע ${rs.length > 1 ? 'חלק מהטיקטים האלה' : 'את הטיקט הזה'}.\nלשנות בכל זאת?`, 'שנה', 'ביטול', true)) return 0;
+  let n = 0;
+  for (const r0 of rs) {
+    const r = S.recs.get(r0.id) || r0, upd = change(r);
+    const before = Object.fromEntries(COLS.map(c => [c, r[c]])), after = {...before, ...upd};
+    const changed = COLS.filter(c => norm(after[c]) !== norm(before[c]));
+    if (!changed.length) continue;
+    try {
+      const res = await saveChanges({id: r.id, rec: r, before}, after, changed);
+      if (res) n++;
+    } catch (e) {
+      if (e instanceof AuthError) { sessionEnded(); return n; }
+      if (e && e.deleted) continue;
+      await info(title, errText(e)); break;
+    }
+  }
+  return n;
+}
+async function setStatusRecs(rs, status) {
+  const fin = stClass({status, close_date: ''}) === 'finish', now = nowText();
+  const n = await changeRecs(rs, r => fin ? {status, close_date: norm(r.close_date) ? r.close_date : now} : {status, close_date: ''}, 'שינוי סטטוס');
+  if (!n) return renderListBody();
+  toast(`סטטוס ${status}: ${n} טיקטים`);
+  if (fin) {
+    const need = COLS.filter(c => reqFields().close.has(LABEL[c]));
+    const miss = rs.map(r => S.recs.get(r.id) || r).map(r => [r.fdt, need.filter(c => !norm(r[c])).map(c => LABEL[c])]).filter(x => x[1].length);
+    if (miss.length) await info('FINISH', 'נסגר, אבל חסרים שדות לסגירה:\n\n' + miss.slice(0, 10).map(([f, l]) => `טיקט ${f}: ${l.join(', ')}`).join('\n'));
+  }
+  renderListBody();
+}
+async function setContractorRecs(rs, name) {
+  const today = nowText().slice(0, 10);
+  const n = await changeRecs(rs, r => {
+    const bump = norm(r.escalation_date) ? r.escalation_date : today;
+    const upd = {contractor: name, escalation_date: bump};
+    const st = autoStatus(r.status, name, bump, r.close_date, false);
+    if (st) upd.status = st;
+    return upd;
+  }, 'קבלן מבצע');
+  if (n) toast(`קבלן מבצע ${name}: ${n} טיקטים`);
+  renderListBody();
+}
+// selection of several tickets
+function togglePick(id) {
+  if (!S.pick) return;
+  if (S.pick.has(id)) S.pick.delete(id); else S.pick.add(id);
+  renderListBody();
+}
+function pickedRecs() { return [...(S.pick || [])].map(id => S.recs.get(id)).filter(Boolean); }
+function renderPickBar() {
+  let bar = $('#pickbar');
+  if (!S.pick || S.view !== 'list') { if (bar) bar.remove(); if ($('#new')) $('#new').classList.remove('hidden'); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'pickbar'; bar.className = 'pickbar'; document.body.appendChild(bar); }
+  if ($('#new')) $('#new').classList.add('hidden');
+  const n = S.pick.size, ro = S.readonly, dis = n ? '' : 'disabled';
+  bar.innerHTML = `<div class="pk-top"><b>${n} נבחרו</b><button class="pk-x" data-p="x">✕ סיום</button></div>
+    <div class="pk-btns"><button data-p="copy" ${dis}>העתק</button><button class="wa" data-p="send" ${dis}>שלח</button>
+    ${ro ? '' : `<button data-p="status" ${dis}>סטטוס</button><button data-p="contr" ${dis}>קבלן</button>`}</div>`;
+  bar.querySelectorAll('[data-p]').forEach(b => b.onclick = async () => {
+    const p = b.dataset.p, rs = pickedRecs();
+    if (p === 'x') { S.pick = null; renderListBody(); return; }
+    if (!rs.length) return;
+    if (p === 'copy') copyRecs(rs);
+    else if (p === 'send') sendRecs(rs);
+    else if (p === 'status') statusMenu(rs);
+    else if (p === 'contr') contractorMenu(rs);
+  });
 }
 function openWaze() {
   const url = wazeUrl(values());
