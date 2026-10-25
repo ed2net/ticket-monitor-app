@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.40';
+const APP_VERSION = 'mobile 1.41';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -378,7 +378,7 @@ function closeSheet() { const m = $('#modal'); m.classList.add('hidden'); m.inne
 
 // ───────────── phone "back" button (1.12): closes the editor / window / card instead of leaving the app ─────────────
 const sheetOpen = () => !$('#modal').classList.contains('hidden');
-const somethingOpen = () => !!$('#bigedit') || sheetOpen() || S.view === 'card';
+const somethingOpen = () => !!$('#bigedit') || sheetOpen() || S.view === 'card' || S.view === 'people';
 function guard() {                      // one extra history entry while a card / window / editor is open
   clearTimeout(unguard.t);
   if (!(history.state && history.state.tm)) { try { history.pushState({tm: 1}, ''); } catch {} }
@@ -394,6 +394,7 @@ window.addEventListener('popstate', async () => {
   if ($('#bigedit')) { $('#bigcancel').click(); }
   else if (sheetOpen()) closeSheet();
   else if (S.view === 'card') await closeCard();
+  else if (S.view === 'people') renderList();
   if (somethingOpen()) guard();
 });
 // ───────────── קרע סיב form (1.9): six fields → one sentence in פתרון ─────────────
@@ -547,7 +548,7 @@ async function renderLogin(msg) {
 // ───────────── fast start: show the saved copy at once, then only the changes are downloaded ─────────────
 function usableCache(c) { return !!(c && c.uid && c.uid === S.session.uid && c.tm && c.lm && Array.isArray(c.rows)); }
 function loadFromCache(cache) {
-  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.maps = cache.maps || null; S.role = cache.role || 'user';
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.maps = cache.maps || null; S.people = cache.people || []; S.peopleFields = cache.peopleFields || []; S.role = cache.role || 'user';
   S.raw = new Map((cache.rows || []).map(r => [+r.id, r]));
   S.recs = new Map([...S.raw.values()].map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
   S.tm = cache.tm || ''; S.lm = cache.lm || ''; S.cacheAt = cache.saved_text || '';
@@ -571,7 +572,7 @@ async function connectInBackground(cache) {
   S.connecting = false;
   startLive();
   await sync();                                       // only what changed since the saved copy
-  try { setProfiles(await S.cloud.loadProfiles()); await loadWaSetting(); await reloadLookups(); saveCache(); } catch {}
+  try { setProfiles(await S.cloud.loadProfiles()); await loadWaSetting(); await reloadLookups(); await loadPeople(); saveCache(); } catch {}
   if (S.view === 'list') renderListBody();
   if (Date.now() - (cache.at || 0) > 24 * 3600 * 1000) {   // old copy: full reload in the background (safety net)
     try { await fullLoad(); onDataChanged([], []); } catch {}
@@ -593,7 +594,7 @@ async function enterOnline() {
 }
 function enterOffline(cache) {
   S.readonly = true; S.view = 'list'; S.cacheAt = cache.saved_text || '';
-  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.maps = cache.maps || null;
+  S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.maps = cache.maps || null; S.people = cache.people || []; S.peopleFields = cache.peopleFields || [];
   S.recs = new Map((cache.rows || []).map(r => { const rec = dbToRec(r); return [rec.id, rec]; }));
   S.loaded = true;
   renderList();
@@ -602,6 +603,7 @@ async function fullLoad() {
   const c = S.cloud;
   const [tickets, lookups, profiles, logtime] = await Promise.all([c.loadTickets(), c.loadLookups(), c.loadProfiles(), c.lastLogTime()]);
   try { await loadWaSetting(); } catch {}
+  await loadPeople();
   setProfiles(profiles);
   S.recs = new Map();
   S.raw = new Map();
@@ -644,7 +646,7 @@ function saveCache() {
   cacheTimer = setTimeout(() => {
     if (S.readonly || !S.loaded) return;
     kv.set('cache', {saved_text: nowText(), at: Date.now(), uid: S.cloud.user.id || '', role: S.role, tm: S.tm, lm: S.lm,
-      names: S.names, waOff: S.waOff || [], req: S.req || null, maps: S.maps || null, lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
+      names: S.names, waOff: S.waOff || [], req: S.req || null, maps: S.maps || null, people: S.people || [], peopleFields: S.peopleFields || [], lookups: S.lookups, rows: [...(S.raw || new Map()).values()]});
   }, 3000);
 }
 function startLive() {
@@ -752,7 +754,7 @@ function renderList() {
   S.view = 'list'; S.card = null; track(); unguard();
   if ($('#pickbar') && !S.pick) $('#pickbar').remove();
   app().innerHTML = `<div class="screen">
-    <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><button class="icon" id="set">⚙</button></div><div id="pill">${pillHtml()}</div></div>
+    <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><div class="topbtns"><button class="icon" id="ppl" title="עובדים">👥</button><button class="icon" id="set">⚙</button></div></div><div id="pill">${pillHtml()}</div></div>
     ${S.readonly ? `<div class="banner grey">הנתונים מ-<bdi dir="ltr">${esc(S.cacheAt)}</bdi>. אפשר לחפש, לפתוח טיקט, להעתיק ולשלוח ב-WhatsApp. שמירה — כשתחזור הרשת.<br><button id="retry">התחבר שוב</button></div>` : ''}
     <input id="q" class="search" type="search" placeholder="🔍  חיפוש: מספר, עיר, רחוב, ארונית…" value="${esc(S.query)}">
     <div class="chips">${CHIPS.map(([k, t]) =>
@@ -760,6 +762,7 @@ function renderList() {
     <div class="count" id="count"></div><div class="list" id="list"></div>
     ${S.readonly ? '' : '<button class="fab" id="new">+</button>'}</div>`;
   $('#set').onclick = settings;
+  $('#ppl').onclick = () => renderPeople();
   $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
   document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = b.dataset.chip; S.limit = 60; try { localStorage.setItem('tm_chip', S.chip); } catch {} renderList(); });
   if ($('#new')) $('#new').onclick = () => openCard(null);
@@ -843,6 +846,7 @@ function fieldHtml(c) {
   const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
   const fiber = c === 'solution' && !S.readonly ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
     : c === 'site' ? '<button class="folderbtn" id="folderbtn" type="button">📁 תיקיית מתחם</button>'      // 1.39
+    : c === 'contractor' ? '<button class="contactbtn" id="contactbtn" type="button">📞 פרטי קשר</button>'      // 1.41
     : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>' : '';     // 1.22 Waze, 1.26 Google Maps
   const req = reqFields(), vm = req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.29: required fields
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
@@ -935,6 +939,7 @@ function renderCard() {
   document.querySelectorAll('[data-big]').forEach(el => el.addEventListener('click', () => openTextEditor(el.dataset.big)));
   if (inputOf('fault')) inputOf('fault').addEventListener('change', faultChanged);
   if ($('#fiberbtn')) $('#fiberbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); fiberForm(); };
+  if ($('#contactbtn')) $('#contactbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); contactSheet(((inputOf('contractor') || {}).value || '').trim()); };
   if ($('#folderbtn')) $('#folderbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openSiteFolder(); };
   if ($('#wazebtn')) $('#wazebtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openWaze(); };
   if ($('#gmapsbtn')) $('#gmapsbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openGmaps(); };
@@ -1204,6 +1209,81 @@ function openSiteFolder() {
     <div class="btns"><button class="btn" id="fclose">ביטול</button></div>`);
   s.querySelectorAll('a').forEach(a => a.addEventListener('click', () => setTimeout(closeSheet, 300)));
   s.querySelector('#fclose').onclick = closeSheet;
+}
+// ───────────── 1.41 / 10.70: «עובדים» — contacts (read only on the phone; the admin edits on the computer) ─────────────
+const PERSON_SEL = 'id,kind,first_name,last_name,email,phone,contractor,user_id,extra,active';
+async function loadPeople() {
+  if (S.readonly) return;
+  try {
+    S.people = await S.cloud.fetchAll('people', `select=${PERSON_SEL}&order=first_name,last_name,id`);
+    const f = await S.cloud.loadSetting('people_fields');
+    S.peopleFields = (Array.isArray(f) ? f : []).map(x => { const [key, label, type] = String(x).split('|'); return {key, label, type: type || 'text'}; })
+      .filter(x => x.key && x.label);
+    S.peopleOk = true;
+  } catch (e) { if (e instanceof AuthError) throw e; S.peopleOk = !(e && /people|PGRST205/.test(String(e.message || e))); }
+}
+const personName = p => [p.first_name, p.last_name].map(x => norm(x)).filter(Boolean).join(' ') || '—';
+function waPhone(phone) {                   // 050-123 4567 → 972501234567
+  let d = String(phone || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.startsWith('00')) d = d.slice(2);
+  if (d.startsWith('0')) d = '972' + d.slice(1);
+  return d;
+}
+const telPhone = phone => String(phone || '').replace(/[^\d+]/g, '');
+function personFor(name) {
+  const n = norm(name); if (!n) return null;
+  const act = (S.people || []).filter(p => p.active !== false);
+  return act.find(p => same(p.contractor, n)) || act.find(p => same(personName(p), n)) || null;
+}
+function contactLinks(p) {
+  const tel = telPhone(p.phone), wa = waPhone(p.phone), em = norm(p.email);
+  return `${tel ? `<a class="cl call" href="tel:${esc(tel)}">📞 התקשר</a>` : ''}${wa ? `<a class="cl wa" target="_blank" rel="noopener" href="https://wa.me/${wa}">WhatsApp</a>` : ''}${em ? `<a class="cl mail" href="mailto:${esc(em)}">✉ אימייל</a>` : ''}`;
+}
+function personSheet(p) {
+  const rows = [['סוג', p.kind], ['טלפון', p.phone], ['אימייל', p.email], ['קבלן מבצע', p.contractor]]
+    .concat((S.peopleFields || []).map(f => [f.label, (p.extra || {})[f.key]])).filter(([, v]) => norm(v));
+  const s = sheet(`<h3>${esc(personName(p))}</h3><div class="pinfo">${rows.map(([k, v]) => `<div><span>${esc(k)}</span><b dir="auto">${esc(v)}</b></div>`).join('')}</div>
+    <div class="clinks">${contactLinks(p)}</div><div class="btns"><button class="btn" id="pclose">סגור</button></div>`);
+  s.querySelector('#pclose').onclick = closeSheet;
+  s.querySelectorAll('a.cl').forEach(a => a.addEventListener('click', () => setTimeout(closeSheet, 300)));
+}
+function contactSheet(name) {
+  if (!name) { toast('השדה «קבלן מבצע» ריק'); return; }
+  const p = personFor(name);
+  if (!p) { toast(`אין פרטי קשר ל-«${name}». המנהל מוסיף אותם ב«עובדים» בתוכנית במחשב.`, 4500); return; }
+  personSheet(p);
+}
+function renderPeople() {
+  S.view = 'people'; S.card = null; S.pick = null; track(); guard();
+  if ($('#pickbar')) $('#pickbar').remove();
+  S.pq = S.pq || ''; S.pkind = S.pkind || 'all';
+  app().innerHTML = `<div class="screen">
+    <div class="top"><div class="toprow"><div class="title"><button class="back" id="pback">→</button><span>עובדים</span></div></div></div>
+    ${S.peopleOk === false ? '<div class="banner grey">הטבלה «עובדים» עוד לא קיימת בשרת (16_people.sql).</div>' : ''}
+    <input id="pq" class="search" type="search" placeholder="🔍  חיפוש: שם, טלפון, קבלן…" value="${esc(S.pq)}">
+    <div class="chips" id="pkinds"></div><div class="count" id="pcount"></div><div class="list" id="plist"></div></div>`;
+  $('#pback').onclick = () => history.back();
+  $('#pq').oninput = e => { S.pq = e.target.value; renderPeopleBody(); };
+  renderPeopleBody();
+  if (!S.readonly) loadPeople().then(() => { if (S.view === 'people') renderPeopleBody(); saveCache(); }).catch(() => {});
+}
+function renderPeopleBody() {
+  const all = (S.people || []).filter(p => p.active !== false);
+  const kinds = ['all', ...new Set(['קבלן', 'משתמש', 'מפקח', 'אחר', ...all.map(p => norm(p.kind)).filter(Boolean)])];
+  $('#pkinds').innerHTML = kinds.map(k => `<button class="chip ${S.pkind === k ? 'on' : ''}" data-k="${esc(k)}">${k === 'all' ? 'הכל' : esc(k)} <b>${k === 'all' ? all.length : all.filter(p => norm(p.kind) === k).length}</b></button>`).join('');
+  $('#pkinds').querySelectorAll('[data-k]').forEach(b => b.onclick = () => { S.pkind = b.dataset.k; renderPeopleBody(); });
+  const words = norm(S.pq).toLowerCase().split(/\s+/).filter(Boolean);
+  const text = p => [personName(p), p.kind, p.phone, p.email, p.contractor, ...Object.values(p.extra || {})].join(' ').toLowerCase();
+  const rows = all.filter(p => (S.pkind === 'all' || norm(p.kind) === S.pkind) && words.every(w => text(p).includes(w)))
+    .sort((a, b) => personName(a).localeCompare(personName(b), 'he'));
+  $('#pcount').textContent = `${rows.length} עובדים`;
+  $('#plist').innerHTML = rows.map(p => `<div class="person" data-id="${p.id}"><div class="pmain"><b>${esc(personName(p))}</b>
+      <span>${esc([p.kind, p.contractor && !same(p.contractor, personName(p)) ? 'קבלן: ' + p.contractor : ''].filter(Boolean).join(' · '))}</span>
+      <span dir="ltr" class="ph">${esc(p.phone || '')}</span></div><div class="clinks">${contactLinks(p)}</div></div>`).join('') ||
+    `<div class="loading">${S.readonly ? 'אין נתונים במצב לא מקוון' : 'אין עובדים להצגה'}</div>`;
+  $('#plist').querySelectorAll('.person').forEach(el => el.querySelector('.pmain').onclick = () => {
+    const p = (S.people || []).find(x => x.id === +el.dataset.id); if (p) personSheet(p); });
 }
 // ───────────── 1.40 / 10.67: long press on a ticket — the same actions as the right click on the computer ─────────────
 const DUP_SKIP = new Set(['fdt', 'entry_date', 'status', 'contractor', 'escalation_date', 'close_type', 'infrastructure',
