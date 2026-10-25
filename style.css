@@ -181,3 +181,6 @@ body.noscroll{overflow:hidden}
 
 /* 1.43 */
 .cl.sendt{display:block;margin-top:8px;padding:11px 0;font-size:15px}
+
+/* 1.44: technician */
+.btn.closet{display:block;width:100%;margin:12px 0 4px;padding:14px 0;background:#25864a;color:#fff;border:0;border-radius:12px;font-size:17px;font-weight:800}

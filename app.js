@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.43';
+const APP_VERSION = 'mobile 1.44';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -754,15 +754,15 @@ function renderList() {
   S.view = 'list'; S.card = null; track(); unguard();
   if ($('#pickbar') && !S.pick) $('#pickbar').remove();
   app().innerHTML = `<div class="screen">
-    <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><div class="topbtns"><button class="icon" id="ppl" title="עובדים">👥</button><button class="icon" id="set">⚙</button></div></div><div id="pill">${pillHtml()}</div></div>
+    <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><div class="topbtns">${isTech() ? '' : '<button class="icon" id="ppl" title="עובדים">👥</button>'}<button class="icon" id="set">⚙</button></div></div><div id="pill">${pillHtml()}</div></div>
     ${S.readonly ? `<div class="banner grey">הנתונים מ-<bdi dir="ltr">${esc(S.cacheAt)}</bdi>. אפשר לחפש, לפתוח טיקט, להעתיק ולשלוח ב-WhatsApp. שמירה — כשתחזור הרשת.<br><button id="retry">התחבר שוב</button></div>` : ''}
     <input id="q" class="search" type="search" placeholder="🔍  חיפוש: מספר, עיר, רחוב, ארונית…" value="${esc(S.query)}">
     <div class="chips">${CHIPS.map(([k, t]) =>
       `<button class="chip c-${k} ${S.chip === k ? 'on' : ''}" data-chip="${k}">${t} <b data-n="${k}"></b></button>`).join('')}</div>
     <div class="count" id="count"></div><div class="list" id="list"></div>
-    ${S.readonly ? '' : '<button class="fab" id="new">+</button>'}</div>`;
+    ${S.readonly || isTech() ? '' : '<button class="fab" id="new">+</button>'}</div>`;
   $('#set').onclick = settings;
-  $('#ppl').onclick = () => renderPeople();
+  if ($('#ppl')) $('#ppl').onclick = () => renderPeople();
   $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
   document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = b.dataset.chip; S.limit = 60; try { localStorage.setItem('tm_chip', S.chip); } catch {} renderList(); });
   if ($('#new')) $('#new').onclick = () => openCard(null);
@@ -798,7 +798,7 @@ function filtered() {
 function renderListBody() {
   const list = $('#list'); if (!list) return;
   const rows = filtered(), today = nowText().slice(0, 10);      // 1.27: opened today → orange card
-  $('#count').textContent = `${rows.length} טיקטים`;
+  $('#count').textContent = `${rows.length} טיקטים` + (isTech() ? ' — רק הטיקטים שלך' : '');
   document.querySelectorAll('[data-n]').forEach(b => { b.textContent = (S.chipCounts || {})[b.dataset.n] ?? ''; });
   const open = {};
   for (const c of S.connections) if (c.conn !== S.conn && c.ticket_id != null) { const o = open[c.ticket_id] || (open[c.ticket_id] = {names: [], edit: false}); o.names.push(c.name || userName(c.user_id)); o.edit = o.edit || !!c.editing; }
@@ -836,19 +836,23 @@ function openCard(id, prefill) {
   track();
   guard();
 }
+// 1.44 / 10.75: a technician (role 'tech') sees only his tickets and changes only the closing fields
+const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes']);
+const isTech = () => S.role === 'tech';
+const canEdit = c => !S.readonly && !MISSING.has(c) && (!isTech() || TECH_EDIT.has(c));
 function fieldHtml(c) {
   const v = S.card.before[c] ?? '';
-  const ro = S.readonly || MISSING.has(c) ? 'readonly' : '';
+  const ro = !canEdit(c) ? 'readonly' : '';
   const list = LOOKUP[c] || c === 'infrastructure' ? `list="dl-${c}"` : '';
   const ltr = DATE_COLS.has(c) || c === 'fdt' || c === 'house' || c === 'cabinet' ? 'ltr' : '';
   const input = MULTI.has(c) ? `<textarea data-c="${c}" data-big="${c}" readonly rows="2" placeholder="${S.readonly ? ' ' : 'לחץ לכתיבה…'}">${esc(v)}</textarea>`
     : `<input data-c="${c}" class="${ltr}" ${list} ${ro} value="${esc(v)}" ${DATE_COLS.has(c) ? `inputmode="numeric" placeholder="${DATE_ONLY.has(c) ? 'dd/mm/yyyy' : 'dd/mm/yyyy HH:MM'}"` : 'placeholder=" "'} autocomplete="off">`;
-  const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
-  const fiber = c === 'solution' && !S.readonly ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
+  const now = DATE_COLS.has(c) && canEdit(c) ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
+  const fiber = c === 'solution' && canEdit(c) ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
     : c === 'site' ? '<button class="folderbtn" id="folderbtn" type="button">📁 תיקיית מתחם</button>'      // 1.39
     : c === 'contractor' || c === 'inspector' ? `<button class="contactbtn" data-contact="${c}" type="button">📞 פרטי קשר</button>`      // 1.41 / 1.42
     : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>' : '';     // 1.22 Waze, 1.26 Google Maps
-  const req = reqFields(), vm = req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.29: required fields
+  const req = reqFields(), vm = isTech() && !canEdit(c) ? '' : req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.44: a technician — only his fields   // 1.29: required fields
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
 }
 function datalists() {
@@ -921,20 +925,22 @@ function renderCard() {
   const sub = !isNew && rec._v > 1 && rec._ua ? `עדכון אחרון: <bdi dir="ltr">${esc(localTime(rec._ua))}</bdi> · ${esc(userName(rec._ub))}` : '';
 
   app().innerHTML = `<div class="screen">
-    <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
+    <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew || isTech() ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
     <div id="others"></div><div id="remote"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
       <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all 20 fields, same order as the table / desktop card -->
       ${datalists()}
+      ${isTech() && !isNew && !S.readonly && stClass(rec) !== 'finish' ? '<button class="btn closet" id="closet">✓ סגור תקלה (FINISH)</button>' : ''}
     </div>
     <div class="bottom"><button class="btn goback" id="back2" aria-label="חזרה">→ חזרה</button><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
   $('#back').onclick = closeCard;
   $('#back2').onclick = closeCard;
-  if (!S.readonly && !S.addrOff) addrHook();          // 1.21: new and existing tickets
+  if (!S.readonly && !S.addrOff && !isTech()) addrHook();     // 1.44: a technician does not change the address          // 1.21: new and existing tickets
   if ($('#hist')) $('#hist').onclick = () => showHistory(c.id);
   $('#wa').onclick = whatsapp;
   $('#save').onclick = save;
+  if ($('#closet')) $('#closet').onclick = closeByTech;
   document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('input', () => onEdit(el.dataset.c)));
   document.querySelectorAll('[data-big]').forEach(el => el.addEventListener('click', () => openTextEditor(el.dataset.big)));
   if (inputOf('fault')) inputOf('fault').addEventListener('change', faultChanged);
@@ -988,13 +994,30 @@ function onEdit(col) {
   if (DATE_COLS.has(col)) { const el = inputOf(col); el.classList.toggle('bad', !!norm(el.value) && !parseDate(el.value)); }
   if ((col === 'contractor' || col === 'escalation_date' || col === 'close_date') && !S.readonly) {   // 1.24–1.25 / 10.38–10.39
     const st = inputOf('status'), v = values();
-    const want = st && autoStatus(v.status, v.contractor, v.escalation_date, v.close_date, col === 'close_date');
+    let want = st && autoStatus(v.status, v.contractor, v.escalation_date, v.close_date, col === 'close_date');
+    if (isTech() && want && want !== 'FINISH') want = null;      // 1.44: a technician only closes
     if (want && want !== norm(st.value)) { st.value = want; toast('סטטוס: ' + want); }
   }
   if (col === 'fdt') { const el = inputOf('fdt'); el.classList.toggle('bad', isDupFdt(el.value)); }
   updateSave();
   const dirty = changedCols(values()).length > 0;
   if (dirty !== c.dirty) { c.dirty = dirty; track(); renderOthersBar(); }
+}
+async function closeByTech() {        // 1.44: required closing fields → תאריך סגירה = now → FINISH → save
+  const req = reqFields().close, v = values();
+  const need = COLS.filter(c => req.has(LABEL[c]) && c !== 'close_date' && c !== 'status' && !norm(v[c]));
+  if (need.length) {
+    need.forEach(c => { const f = $('#f-' + c); if (f) f.classList.add('rq-close'); });
+    const own = need.filter(c => TECH_EDIT.has(c)), office = need.filter(c => !TECH_EDIT.has(c));
+    return info('חסרים שדות לסגירה', (own.length ? 'יש למלא: ' + own.map(c => LABEL[c]).join(', ') : '') +
+      (office.length ? (own.length ? '\n' : '') + 'חסר (ממלאים במשרד): ' + office.map(c => LABEL[c]).join(', ') : ''));
+  }
+  if (!await ask('סגירת תקלה', `לסגור את טיקט ${S.card.rec.fdt}?\nתאריך סגירה: ${norm(v.close_date) || nowText()}`, 'סגור', 'ביטול')) return;
+  const cd = inputOf('close_date'), st = inputOf('status');
+  if (!norm(cd.value)) cd.value = nowText();
+  st.value = 'FINISH';
+  onEdit('close_date');
+  await save();
 }
 function updateSave() {
   markClosing();
@@ -1059,7 +1082,7 @@ async function closeCard() {
 function openTextEditor(col) {
   const el = inputOf(col);
   if (!el || $('#bigedit')) return;
-  const ro = S.readonly || (S.card && S.card.deleted);
+  const ro = !canEdit(col) || (S.card && S.card.deleted);
   const isNew = S.card && S.card.id == null;
   const ov = document.createElement('div');
   ov.id = 'bigedit';
@@ -1324,7 +1347,7 @@ async function sendRecs(rs, person) {
 }
 function rowMenu(id) {
   const r = S.recs.get(id); if (!r) return;
-  const ro = S.readonly;
+  const ro = S.readonly || isTech();
   const s = sheet(`<h3>טיקט ${esc(r.fdt)}</h3><p class="sub">${esc([r.city, r.street, r.house].filter(Boolean).join(' '))}</p>
     <div class="menu">
       <button class="mi" data-m="open">פתח</button>
@@ -1332,7 +1355,7 @@ function rowMenu(id) {
       ${personFor(r.contractor) && waPhone(personFor(r.contractor).phone) ? `<button class="mi wa" data-m="sendc">שלח לקבלן: ${esc(personName(personFor(r.contractor)))}</button>` : ''}
       <button class="mi wa" data-m="send">שלח ב-WhatsApp… (בחירת איש קשר)</button>
       ${ro ? '' : '<button class="mi" data-m="dup">שכפל לטיקט חדש</button><button class="mi" data-m="status">סטטוס ‹</button><button class="mi" data-m="contr">קבלן מבצע ‹</button>'}
-      <button class="mi" data-m="pick">☑ בחר כמה טיקטים</button>
+      ${isTech() ? '' : '<button class="mi" data-m="pick">☑ בחר כמה טיקטים</button>'}
     </div><div class="btns"><button class="btn" data-m="close">ביטול</button></div>`);
   s.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
     const m = b.dataset.m; closeSheet();
@@ -1479,7 +1502,7 @@ async function showHistory(id) {
 function settings() {
   const email = S.cloud.user.email || S.session.email || '';
   const s = sheet(`<div class="set"><h3>הגדרות</h3>
-    <p><b>${esc(myName())}</b> (${esc(email)})</p><p>תפקיד: ${S.role === 'admin' ? 'מנהל' : 'משתמש'}</p>
+    <p><b>${esc(myName())}</b> (${esc(email)})</p><p>תפקיד: ${S.role === 'admin' ? 'מנהל' : isTech() ? 'טכנאי' : 'משתמש'}</p>
     <p>מצב: ${S.readonly ? 'לא מקוון — קריאה בלבד' : 'מחובר'}</p><p>גרסה: ${APP_VERSION}</p>
     <p style="color:#6b7785">הוספה למסך הבית: iPhone (Safari) — שיתוף ← "הוסף למסך הבית". Android (Chrome) — תפריט ⋮ ← "התקן אפליקציה" / "הוסף למסך הבית".<br>
     ניהול משתמשים והרשאות — בתוכנית במחשב (⚙ הגדרות ← משתמשים).</p>
