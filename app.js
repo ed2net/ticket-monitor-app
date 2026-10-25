@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.44';
+const APP_VERSION = 'mobile 1.45';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1017,7 +1017,10 @@ async function closeByTech() {        // 1.44: required closing fields → תא�
   if (!norm(cd.value)) cd.value = nowText();
   st.value = 'FINISH';
   onEdit('close_date');
+  const id = S.card.id, msg = message(values());
   await save();
+  const r = S.recs.get(id);
+  if (r && stClass(r) === 'finish' && S.view === 'list') whatsapp(msg, 'נסגר ✓ — שלח לקבוצה עם תמונות');   // 1.45
 }
 function updateSave() {
   markClosing();
@@ -1478,12 +1481,53 @@ function message(v) {             // same as the desktop (10.25): only fields wi
     lines.push(first ? `*${LABEL[c]}:* ${first}` : `*${LABEL[c]}:*`, ...parts.slice(1).map(x => '\u200f' + x));   // *…* = bold in WhatsApp
   }
   return lines.join('\n'); }
-async function whatsapp() {
+// 1.45: photos with the message — shrunk on the phone, then shared to WhatsApp (the group is chosen there)
+async function shrinkImage(file, max = 1600, q = 0.8) {
+  try {
+    const bmp = await createImageBitmap(file, {imageOrientation: 'from-image'});
+    const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(bmp.width * k)); cv.height = Math.max(1, Math.round(bmp.height * k));
+    cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+    const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', q));
+    if (!blob) return file;
+    return new File([blob], String(file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg', {type: 'image/jpeg'});
+  } catch { return file; }
+}
+const canShareFiles = files => !!(navigator.share && navigator.canShare && navigator.canShare({files}));
+async function whatsapp(msgIn, head) {
   if (!S.readonly) { try { await loadWaSetting(); saveCache(); } catch {} }   // newest choice of the admin
-  const msg = message(values());
-  const s = sheet(`<h3>הודעה ל-WhatsApp</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
+  const msg = typeof msgIn === 'string' ? msgIn : message(values());
+  let files = [];
+  const s = sheet(`<h3>${esc(head || 'הודעה ל-WhatsApp')}</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
+    <div class="photos"><label class="btn photo">📷 הוסף תמונות<input type="file" id="waphotos" accept="image/*" multiple hidden></label><div class="thumbs" id="thumbs"></div></div>
     <div class="btns"><button class="btn wa" id="wasend">שלח</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
-  s.querySelector('#wasend').onclick = () => { const t = $('#wamsg').value.trim(); if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank'); closeSheet(); };
+  const thumbs = () => {
+    s.querySelector('#thumbs').innerHTML = files.map((f, i) => `<span class="th"><img src="${URL.createObjectURL(f)}" alt=""><button data-x="${i}">✕</button></span>`).join('');
+    s.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { files.splice(+b.dataset.x, 1); thumbs(); });
+    s.querySelector('#wasend').textContent = files.length ? `שלח עם ${files.length} תמונות` : 'שלח';
+  };
+  s.querySelector('#waphotos').onchange = async e => {
+    const add = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!add.length) return;
+    toast('מכין תמונות…');
+    for (const f of add) files.push(await shrinkImage(f));
+    thumbs();
+  };
+  s.querySelector('#wasend').onclick = async () => {
+    const t = $('#wamsg').value.trim();
+    if (files.length) {
+      if (canShareFiles(files)) {
+        try { await navigator.share({files, text: t}); closeSheet(); }
+        catch (e) { if (!(e && e.name === 'AbortError')) toast('השיתוף נכשל: ' + (e && e.message || e), 4000); }
+        return;
+      }
+      toast('הטלפון לא מאפשר לשלוח תמונות מכאן — ההודעה נשלחת, צרף את התמונות ב-WhatsApp', 5000);
+    }
+    if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank');
+    closeSheet();
+  };
   s.querySelector('#wacopy').onclick = async () => { try { await navigator.clipboard.writeText($('#wamsg').value.trim()); toast('הטקסט הועתק'); } catch { $('#wamsg').select(); document.execCommand('copy'); toast('הטקסט הועתק'); } };
   s.querySelector('#waclose').onclick = closeSheet;
 }

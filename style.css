@@ -184,3 +184,11 @@ body.noscroll{overflow:hidden}
 
 /* 1.44: technician */
 .btn.closet{display:block;width:100%;margin:12px 0 4px;padding:14px 0;background:#25864a;color:#fff;border:0;border-radius:12px;font-size:17px;font-weight:800}
+
+/* 1.45: photos */
+.photos{margin-top:8px}
+.btn.photo{display:block;text-align:center;padding:11px 0;border:1px dashed #6f95d6;background:#eef4ff;color:#1f4f8f;border-radius:12px;font-weight:700}
+.thumbs{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.thumbs .th{position:relative;width:64px;height:64px}
+.thumbs img{width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.thumbs button{position:absolute;top:-6px;left:-6px;width:22px;height:22px;border-radius:50%;border:0;background:#9b2c2c;color:#fff;font-size:12px;line-height:22px;padding:0}
