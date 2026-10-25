@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.42';
+const APP_VERSION = 'mobile 1.43';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1241,19 +1241,21 @@ function contactLinks(p) {
   const tel = telPhone(p.phone), wa = waPhone(p.phone), em = norm(p.email);
   return `${tel ? `<a class="cl call" href="tel:${esc(tel)}">📞 התקשר</a>` : ''}${wa ? `<a class="cl wa" target="_blank" rel="noopener" href="https://wa.me/${wa}">WhatsApp</a>` : ''}${em ? `<a class="cl mail" href="mailto:${esc(em)}">✉ אימייל</a>` : ''}`;
 }
-function personSheet(p) {
+function personSheet(p, ticketMsg = '') {
   const rows = [['תפקיד', p.kind], ['טלפון', p.phone], ['אימייל', p.email], ['קבלן מבצע', p.contractor]]
     .concat((S.peopleFields || []).map(f => [f.label, (p.extra || {})[f.key]])).filter(([, v]) => norm(v));
   const s = sheet(`<h3>${esc(personName(p))}</h3><div class="pinfo">${rows.map(([k, v]) => `<div><span>${esc(k)}</span><b dir="auto">${esc(v)}</b></div>`).join('')}</div>
+    ${ticketMsg && waPhone(p.phone) ? `<a class="cl wa sendt" target="_blank" rel="noopener" href="https://wa.me/${waPhone(p.phone)}?text=${encodeURIComponent(ticketMsg)}">שלח את הטיקט ל${esc(personName(p))}</a>` : ''}
     <div class="clinks">${contactLinks(p)}</div><div class="btns"><button class="btn" id="pclose">סגור</button></div>`);
   s.querySelector('#pclose').onclick = closeSheet;
   s.querySelectorAll('a.cl').forEach(a => a.addEventListener('click', () => setTimeout(closeSheet, 300)));
 }
-function contactSheet(name, label = 'קבלן מבצע') {
+async function contactSheet(name, label = 'קבלן מבצע') {
   if (!name) { toast(`השדה «${label}» ריק`); return; }
   const p = personFor(name);
   if (!p) { toast(`אין פרטי קשר ל-«${name}». המנהל מוסיף אותם ב«עובדים» בתוכנית במחשב.`, 4500); return; }
-  personSheet(p);
+  if (!S.readonly) { try { await loadWaSetting(); } catch {} }
+  personSheet(p, S.card ? message(values()) : '');       // 1.43: «שלח את הטיקט ל…» — straight to this person
 }
 function renderPeople() {
   S.view = 'people'; S.card = null; S.pick = null; track(); guard();
@@ -1309,15 +1311,16 @@ async function copyText(t) {
           const ok = document.execCommand('copy'); ta.remove(); return ok; }
 }
 async function copyRecs(rs) {
-  if (!S.readonly) { try { await loadWaSetting(); } catch {} }
+  if (!S.readonly) loadWaSetting().catch(() => {});
   S.copied = rs.map(r => ({...r}));
   await copyText(recsMessage(rs));
   toast(rs.length > 1 ? `הועתקו ${rs.length} טיקטים` : `הועתק טיקט ${rs[0].fdt}`);
 }
-async function sendRecs(rs) {
-  if (!S.readonly) { try { await loadWaSetting(); } catch {} }
-  const t = recsMessage(rs);
-  if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank');
+async function sendRecs(rs, person) {
+  const num = person ? waPhone(person.phone) : '';
+  const t = recsMessage(rs);           // 1.43: no waiting here — a window opened after a network wait may be blocked
+  if (!S.readonly) loadWaSetting().catch(() => {});
+  if (t) window.open(`https://wa.me/${num}?text=` + encodeURIComponent(t), '_blank');
 }
 function rowMenu(id) {
   const r = S.recs.get(id); if (!r) return;
@@ -1326,7 +1329,8 @@ function rowMenu(id) {
     <div class="menu">
       <button class="mi" data-m="open">פתח</button>
       <button class="mi" data-m="copy">העתק</button>
-      <button class="mi wa" data-m="send">שלח ב-WhatsApp</button>
+      ${personFor(r.contractor) && waPhone(personFor(r.contractor).phone) ? `<button class="mi wa" data-m="sendc">שלח לקבלן: ${esc(personName(personFor(r.contractor)))}</button>` : ''}
+      <button class="mi wa" data-m="send">שלח ב-WhatsApp… (בחירת איש קשר)</button>
       ${ro ? '' : '<button class="mi" data-m="dup">שכפל לטיקט חדש</button><button class="mi" data-m="status">סטטוס ‹</button><button class="mi" data-m="contr">קבלן מבצע ‹</button>'}
       <button class="mi" data-m="pick">☑ בחר כמה טיקטים</button>
     </div><div class="btns"><button class="btn" data-m="close">ביטול</button></div>`);
@@ -1335,6 +1339,7 @@ function rowMenu(id) {
     if (m === 'open') openCard(id);
     else if (m === 'copy') copyRecs([r]);
     else if (m === 'send') sendRecs([r]);
+    else if (m === 'sendc') sendRecs([r], personFor(r.contractor));
     else if (m === 'dup') { openCard(null, r); faultChanged(); }
     else if (m === 'status') statusMenu([r]);
     else if (m === 'contr') contractorMenu([r]);

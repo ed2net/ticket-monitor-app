@@ -178,3 +178,6 @@ body.noscroll{overflow:hidden}
 .pinfo{display:flex;flex-direction:column;gap:6px;margin:8px 0}
 .pinfo div{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #edf1f5;padding-bottom:5px}
 .pinfo span{color:#6b7785;font-size:13.5px}.pinfo b{font-size:15px;color:#263445}
+
+/* 1.43 */
+.cl.sendt{display:block;margin-top:8px;padding:11px 0;font-size:15px}
