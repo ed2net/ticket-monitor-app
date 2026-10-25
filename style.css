@@ -192,3 +192,9 @@ body.noscroll{overflow:hidden}
 .thumbs .th{position:relative;width:64px;height:64px}
 .thumbs img{width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
 .thumbs button{position:absolute;top:-6px;left:-6px;width:22px;height:22px;border-radius:50%;border:0;background:#9b2c2c;color:#fff;font-size:12px;line-height:22px;padding:0}
+
+/* 1.46: groups to send to */
+.targets{display:flex;flex-direction:column;gap:7px;margin-top:10px}
+.btn.tgt{padding:12px 8px;font-size:15px}
+.btn.tgt.done{background:#25864a;color:#fff;border-color:#25864a}
+.targets .hint{color:#6b7785;font-size:12.5px;margin:0}

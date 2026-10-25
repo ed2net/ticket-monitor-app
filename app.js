@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.45';
+const APP_VERSION = 'mobile 1.46';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -624,6 +624,7 @@ async function loadWaSetting() {  // WhatsApp fields without V — chosen by the
   const v = await S.cloud.loadSetting('wa_unchecked');
   if (Array.isArray(v)) S.waOff = v;
   try { const r = await S.cloud.loadSetting('req_fields'); if (Array.isArray(r)) S.req = r; } catch {}   // 1.29
+  try { const g = await S.cloud.loadSetting('close_groups'); S.closeGroups = Array.isArray(g) ? g : []; } catch {}   // 1.46
   try { const m = await S.cloud.loadSetting('maps_index'); if (Array.isArray(m)) S.maps = m; } catch {}   // 1.39
 }
 // 1.29 / 10.49: required fields — empty ones are coloured: green = needed when opening, orange = needed to close
@@ -1017,10 +1018,10 @@ async function closeByTech() {        // 1.44: required closing fields → תא�
   if (!norm(cd.value)) cd.value = nowText();
   st.value = 'FINISH';
   onEdit('close_date');
-  const id = S.card.id, msg = message(values());
+  const id = S.card.id, msg = message(values()), group = values().sent_group;
   await save();
   const r = S.recs.get(id);
-  if (r && stClass(r) === 'finish' && S.view === 'list') whatsapp(msg, 'נסגר ✓ — שלח לקבוצה עם תמונות');   // 1.45
+  if (r && stClass(r) === 'finish' && S.view === 'list') whatsapp(msg, 'נסגר ✓ — שלח לקבוצה עם תמונות', group);   // 1.45 / 1.46
 }
 function updateSave() {
   markClosing();
@@ -1495,17 +1496,47 @@ async function shrinkImage(file, max = 1600, q = 0.8) {
   } catch { return file; }
 }
 const canShareFiles = files => !!(navigator.share && navigator.canShare && navigator.canShare({files}));
-async function whatsapp(msgIn, head) {
+// 1.46 / 10.76: the ticket's group (נשלח בקבוצה) + groups that also want the closing (⚙ «קבוצות» on the computer)
+function closeTargets(group) {
+  const g = norm(group), out = g ? [g] : [];
+  for (const x of S.closeGroups || []) {
+    const i = String(x).indexOf('|'); if (i < 0) continue;
+    const a = norm(String(x).slice(0, i)), b = norm(String(x).slice(i + 1));
+    if (g && b && groupKey(a) === groupKey(g) && !out.some(o => groupKey(o) === groupKey(b))) out.push(b);
+  }
+  return out;
+}
+const groupTitle = g => String(g || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+async function whatsapp(msgIn, head, groupIn) {
   if (!S.readonly) { try { await loadWaSetting(); saveCache(); } catch {} }   // newest choice of the admin
   const msg = typeof msgIn === 'string' ? msgIn : message(values());
+  const targets = closeTargets(typeof groupIn === 'string' ? groupIn : (S.card ? values().sent_group : ''));
   let files = [];
   const s = sheet(`<h3>${esc(head || 'הודעה ל-WhatsApp')}</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
     <div class="photos"><label class="btn photo">📷 הוסף תמונות<input type="file" id="waphotos" accept="image/*" multiple hidden></label><div class="thumbs" id="thumbs"></div></div>
-    <div class="btns"><button class="btn wa" id="wasend">שלח</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
+    ${targets.length ? `<div class="targets">${targets.map((g, i) => `<button class="btn wa tgt" data-t="${i}">שלח לקבוצה: ${esc(groupTitle(g))}</button>`).join('')}
+      <p class="hint">שם הקבוצה מועתק — ב-WhatsApp אפשר להדביק אותו בחיפוש.${targets.length > 1 ? ' יש לשלוח לכל הקבוצות.' : ''}</p></div>` : ''}
+    <div class="btns"><button class="btn wa" id="wasend">${targets.length ? 'שלח (בחירה)' : 'שלח'}</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
+  const sendTo = async (t, group) => {      // files → share sheet of the phone; text only → WhatsApp contact picker
+    if (group) { try { navigator.clipboard.writeText(groupTitle(group)).catch(() => {}); } catch {} }
+    if (files.length) {
+      if (canShareFiles(files)) {
+        try { await navigator.share({files, text: t}); return true; }
+        catch (e) { if (!(e && e.name === 'AbortError')) toast('השיתוף נכשל: ' + (e && e.message || e), 4000); return false; }
+      }
+      toast('הטלפון לא מאפשר לשלוח תמונות מכאן — ההודעה נשלחת, צרף את התמונות ב-WhatsApp', 5000);
+    }
+    if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank');
+    return true;
+  };
+  s.querySelectorAll('[data-t]').forEach(b => b.onclick = async () => {
+    const g = targets[+b.dataset.t];
+    if (await sendTo($('#wamsg').value.trim(), g)) { b.classList.add('done'); b.textContent = '✓ נשלח: ' + groupTitle(g); }
+  });
   const thumbs = () => {
     s.querySelector('#thumbs').innerHTML = files.map((f, i) => `<span class="th"><img src="${URL.createObjectURL(f)}" alt=""><button data-x="${i}">✕</button></span>`).join('');
     s.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { files.splice(+b.dataset.x, 1); thumbs(); });
-    s.querySelector('#wasend').textContent = files.length ? `שלח עם ${files.length} תמונות` : 'שלח';
+    s.querySelector('#wasend').textContent = (files.length ? `שלח עם ${files.length} תמונות` : 'שלח') + (targets.length ? ' (בחירה)' : '');
   };
   s.querySelector('#waphotos').onchange = async e => {
     const add = [...(e.target.files || [])];
@@ -1515,19 +1546,7 @@ async function whatsapp(msgIn, head) {
     for (const f of add) files.push(await shrinkImage(f));
     thumbs();
   };
-  s.querySelector('#wasend').onclick = async () => {
-    const t = $('#wamsg').value.trim();
-    if (files.length) {
-      if (canShareFiles(files)) {
-        try { await navigator.share({files, text: t}); closeSheet(); }
-        catch (e) { if (!(e && e.name === 'AbortError')) toast('השיתוף נכשל: ' + (e && e.message || e), 4000); }
-        return;
-      }
-      toast('הטלפון לא מאפשר לשלוח תמונות מכאן — ההודעה נשלחת, צרף את התמונות ב-WhatsApp', 5000);
-    }
-    if (t) window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank');
-    closeSheet();
-  };
+  s.querySelector('#wasend').onclick = async () => { if (await sendTo($('#wamsg').value.trim(), '')) closeSheet(); };
   s.querySelector('#wacopy').onclick = async () => { try { await navigator.clipboard.writeText($('#wamsg').value.trim()); toast('הטקסט הועתק'); } catch { $('#wamsg').select(); document.execCommand('copy'); toast('הטקסט הועתק'); } };
   s.querySelector('#waclose').onclick = closeSheet;
 }
