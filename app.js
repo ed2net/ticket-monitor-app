@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.41';
+const APP_VERSION = 'mobile 1.42';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -846,7 +846,7 @@ function fieldHtml(c) {
   const now = DATE_COLS.has(c) && !S.readonly ? `<label class="cal" title="בחר תאריך">📅<input type="${DATE_ONLY.has(c) ? 'date' : 'datetime-local'}" data-pick="${c}" aria-label="${esc(LABEL[c])}"></label><button class="now" data-now="${c}">${DATE_ONLY.has(c) ? 'היום' : 'עכשיו'}</button>` : '';
   const fiber = c === 'solution' && !S.readonly ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
     : c === 'site' ? '<button class="folderbtn" id="folderbtn" type="button">📁 תיקיית מתחם</button>'      // 1.39
-    : c === 'contractor' ? '<button class="contactbtn" id="contactbtn" type="button">📞 פרטי קשר</button>'      // 1.41
+    : c === 'contractor' || c === 'inspector' ? `<button class="contactbtn" data-contact="${c}" type="button">📞 פרטי קשר</button>`      // 1.41 / 1.42
     : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>' : '';     // 1.22 Waze, 1.26 Google Maps
   const req = reqFields(), vm = req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.29: required fields
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
@@ -939,7 +939,8 @@ function renderCard() {
   document.querySelectorAll('[data-big]').forEach(el => el.addEventListener('click', () => openTextEditor(el.dataset.big)));
   if (inputOf('fault')) inputOf('fault').addEventListener('change', faultChanged);
   if ($('#fiberbtn')) $('#fiberbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); fiberForm(); };
-  if ($('#contactbtn')) $('#contactbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); contactSheet(((inputOf('contractor') || {}).value || '').trim()); };
+  document.querySelectorAll('[data-contact]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation();
+    contactSheet(((inputOf(b.dataset.contact) || {}).value || '').trim(), LABEL[b.dataset.contact]); });
   if ($('#folderbtn')) $('#folderbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openSiteFolder(); };
   if ($('#wazebtn')) $('#wazebtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openWaze(); };
   if ($('#gmapsbtn')) $('#gmapsbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openGmaps(); };
@@ -1241,15 +1242,15 @@ function contactLinks(p) {
   return `${tel ? `<a class="cl call" href="tel:${esc(tel)}">📞 התקשר</a>` : ''}${wa ? `<a class="cl wa" target="_blank" rel="noopener" href="https://wa.me/${wa}">WhatsApp</a>` : ''}${em ? `<a class="cl mail" href="mailto:${esc(em)}">✉ אימייל</a>` : ''}`;
 }
 function personSheet(p) {
-  const rows = [['סוג', p.kind], ['טלפון', p.phone], ['אימייל', p.email], ['קבלן מבצע', p.contractor]]
+  const rows = [['תפקיד', p.kind], ['טלפון', p.phone], ['אימייל', p.email], ['קבלן מבצע', p.contractor]]
     .concat((S.peopleFields || []).map(f => [f.label, (p.extra || {})[f.key]])).filter(([, v]) => norm(v));
   const s = sheet(`<h3>${esc(personName(p))}</h3><div class="pinfo">${rows.map(([k, v]) => `<div><span>${esc(k)}</span><b dir="auto">${esc(v)}</b></div>`).join('')}</div>
     <div class="clinks">${contactLinks(p)}</div><div class="btns"><button class="btn" id="pclose">סגור</button></div>`);
   s.querySelector('#pclose').onclick = closeSheet;
   s.querySelectorAll('a.cl').forEach(a => a.addEventListener('click', () => setTimeout(closeSheet, 300)));
 }
-function contactSheet(name) {
-  if (!name) { toast('השדה «קבלן מבצע» ריק'); return; }
+function contactSheet(name, label = 'קבלן מבצע') {
+  if (!name) { toast(`השדה «${label}» ריק`); return; }
   const p = personFor(name);
   if (!p) { toast(`אין פרטי קשר ל-«${name}». המנהל מוסיף אותם ב«עובדים» בתוכנית במחשב.`, 4500); return; }
   personSheet(p);
