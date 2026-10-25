@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.46';
+const APP_VERSION = 'mobile 1.47';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -233,6 +233,7 @@ class Cloud {
     if (back(lm)) lq += '&at=gte.' + encodeURIComponent(back(lm));
     return [await this.fetchAll('tickets', tq), await this.fetchAll('ticket_log', lq)];
   }
+  async visibleIds() { return (await this.fetchAll('tickets', 'select=id&order=id')).map(x => +x.id); }   // 1.47: a technician — which tickets he still sees
   getTicket(id) { return this.cols(() => this._getTicket(id)); }
   async _getTicket(id) { const r = await this.req('GET', `/rest/v1/tickets?select=${sel()}&id=eq.${+id}`); return r && r[0] ? r[0] : null; }
   insertTicket(row) { return this.cols(() => this._insertTicket(row)); }
@@ -687,6 +688,10 @@ async function sync() {
       const id = +d.ticket_id;
       if (S.recs.has(id)) { S.recs.delete(id); S.raw.delete(id); removed.push(id); }
       const t = parseTs(d.at); if (t && (!parseTs(S.lm) || t > parseTs(S.lm))) S.lm = t.toISOString();
+    }
+    if (isTech()) {      // 1.47: a ticket given to another technician (or deleted) is no longer visible — drop it here too
+      const ids = new Set(await S.cloud.visibleIds());
+      for (const id of [...S.recs.keys()]) if (id > 0 && !ids.has(id)) { S.recs.delete(id); S.raw.delete(id); removed.push(id); }
     }
     if (changed.length || removed.length) { saveCache(); onDataChanged(changed, removed); }
   } catch (e) {
