@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.47';
+const APP_VERSION = 'mobile 1.48';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -247,6 +247,8 @@ class Cloud {
   }
   ticketHistory(id) { return this.fetchAll('ticket_log', `select=id,action,changed,old_row,new_row,by_user,at&ticket_id=eq.${+id}&order=at.desc`); }
   changePassword(pw) { return this.req('PUT', '/auth/v1/user', {password: pw}); }
+  rpc(fn, args) { return this.req('POST', `/rest/v1/rpc/${fn}`, args || {}); }                       // 1.48
+  async fn(name, body) { return this.req('POST', `/functions/v1/${name}`, body || {}); }             // 1.48: Edge Function
   async signOut() { try { if (this.at) await this.raw('POST', '/auth/v1/logout', {}, {}, this.at); } catch {} this.at = this.rt = ''; this.exp = 0; }
   rtUrl() { return this.url.replace(/^http/, 'ws') + '/realtime/v1/websocket?apikey=' + encodeURIComponent(this.key) + '&vsn=1.0.0'; }
 }
@@ -515,6 +517,76 @@ async function start() {
   renderLogin('');
 }
 
+// ───────────── 1.48: notifications to a technician's phone (new / cancelled / given away) ─────────────
+const pushOk = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+function u8(b64) { b64 = b64.replace(/-/g, '+').replace(/_/g, '/'); while (b64.length % 4) b64 += '='; return Uint8Array.from(atob(b64), c => c.charCodeAt(0)); }
+function sameKey(sub, key) {
+  try { const a = new Uint8Array(sub.options.applicationServerKey), b = u8(key); return a.length === b.length && a.every((x, i) => x === b[i]); }
+  catch { return true; }
+}
+async function pushSub() { if (!pushOk()) return null; const r = await navigator.serviceWorker.ready; return r.pushManager.getSubscription(); }
+async function pushState() {
+  if (!pushOk()) return 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  return Notification.permission === 'granted' && await pushSub() ? 'on' : 'off';
+}
+async function pushSave(sub) {
+  const j = sub.toJSON();
+  await S.cloud.rpc('push_subscribe', {p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_ua: navigator.userAgent.slice(0, 200)});
+}
+async function pushEnable() {
+  if (!pushOk()) throw new Error(isIOS() ? 'ב-iPhone ההתראות עובדות רק מהאפליקציה במסך הבית: שיתוף ← "הוסף למסך הבית", ולפתוח משם.'
+                                         : 'הדפדפן הזה לא תומך בהתראות. יש לפתוח ב-Chrome.');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('ההתראות חסומות בטלפון. יש לאפשר: Chrome ← ⋮ ← הגדרות ← הגדרות אתר ← התראות.');
+  let key;
+  try { key = (await S.cloud.fn('push', {action: 'key'})).key; }
+  catch (e) { throw new Error(e.status === 404 ? 'ההתראות עוד לא הותקנו בשרת (הפונקציה push). יש לפנות למנהל.' : errText(e)); }
+  if (!key) throw new Error('ההתראות עוד לא הותקנו בשרת. יש לפנות למנהל.');
+  const r = await navigator.serviceWorker.ready;
+  let sub = await r.pushManager.getSubscription();
+  if (sub && !sameKey(sub, key)) { try { await sub.unsubscribe(); } catch {} sub = null; }
+  if (!sub) sub = await r.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: u8(key)});
+  await pushSave(sub);
+  try { localStorage.removeItem('tm_push_later'); } catch {}
+  return sub;
+}
+async function pushDisable() {
+  const sub = await pushSub().catch(() => null);
+  if (!sub) return;
+  try { await S.cloud.rpc('push_unsubscribe', {p_endpoint: sub.endpoint}); } catch {}
+  try { await sub.unsubscribe(); } catch {}
+}
+async function pushRefresh() {      // every start of a technician: the server keeps knowing this phone
+  if (!isTech() || S.readonly || !pushOk() || Notification.permission !== 'granted') return;
+  try { const sub = await pushSub(); if (sub) await pushSave(sub); else await pushEnable(); } catch {}
+}
+async function pushAsk() {          // once after sign-in (and again 3 days after «לא עכשיו»)
+  if (!isTech() || S.readonly || S.view !== 'list' || document.querySelector('.sheet')) return;
+  if (pushOk() && Notification.permission !== 'default') return;
+  if (!pushOk() && !isIOS()) return;
+  let later = 0; try { later = +localStorage.getItem('tm_push_later') || 0; } catch {}
+  if (Date.now() - later < 3 * 24 * 3600 * 1000) return;
+  if (await ask('🔔 התראות', 'לקבל התראה בטלפון כשנכנסת תקלה חדשה שלך, או כשתקלה שלך בוטלה?', 'הפעל', 'לא עכשיו')) {
+    try { await pushEnable(); toast('ההתראות הופעלו ✓'); } catch (e) { info('התראות', e.message || errText(e)); }
+  } else { try { localStorage.setItem('tm_push_later', String(Date.now())); } catch {} }
+}
+function openPending() {            // a tap on a notification → its ticket
+  const id = S.openId; if (!id || !S.loaded) return;
+  S.openId = null;
+  if (S.recs.has(id)) { if (S.view !== 'card' || !S.card || S.card.id !== id) { if (S.view === 'card' && S.card && S.card.dirty) return; openCard(id); } }
+  else toast('התקלה כבר לא אצלך', 3500);
+}
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    const d = e.data || {};
+    if (d.push && S.loaded && !S.readonly) sync();
+    if (d.open) { S.openId = +d.open; sync().finally(openPending); }
+  });
+}
+try { const t = +new URLSearchParams(location.search).get('t'); if (t) { S.openId = t; history.replaceState(null, '', location.pathname); } } catch {}
+
 function renderLoading(t) { app().innerHTML = `<div class="loading">${esc(t)}</div>`; }
 
 async function renderLogin(msg) {
@@ -575,6 +647,7 @@ async function connectInBackground(cache) {
   await sync();                                       // only what changed since the saved copy
   try { setProfiles(await S.cloud.loadProfiles()); await loadWaSetting(); await reloadLookups(); await loadPeople(); saveCache(); } catch {}
   if (S.view === 'list') renderListBody();
+  afterOnline();
   if (Date.now() - (cache.at || 0) > 24 * 3600 * 1000) {   // old copy: full reload in the background (safety net)
     try { await fullLoad(); onDataChanged([], []); } catch {}
   }
@@ -592,7 +665,9 @@ async function enterOnline() {
   }
   startLive();
   renderList();
+  afterOnline();
 }
+function afterOnline() { openPending(); pushRefresh(); setTimeout(pushAsk, 1500); }    // 1.48
 function enterOffline(cache) {
   S.readonly = true; S.view = 'list'; S.cacheAt = cache.saved_text || '';
   S.names = cache.names || {}; S.lookups = cache.lookups || []; S.waOff = cache.waOff || []; S.req = cache.req || null; S.maps = cache.maps || null; S.people = cache.people || []; S.peopleFields = cache.peopleFields || [];
@@ -1567,21 +1642,38 @@ async function showHistory(id) {
   const s = sheet(`<h3>היסטוריה</h3>${html}<div class="btns"><button class="btn" id="hclose">סגור</button></div>`);
   s.querySelector('#hclose').onclick = closeSheet;
 }
+async function pushPanel() {       // 1.48: in ⚙ — on / test / off
+  const st = await pushState(), p = $('#pstate'), b = $('#pbtns');
+  if (!p || !b) return;
+  p.textContent = '🔔 התראות: ' + ({on: 'פעילות ✓', off: 'כבויות', denied: 'חסומות בדפדפן', unsupported: isIOS() ? 'רק מהאפליקציה במסך הבית' : 'אין תמיכה בדפדפן הזה'}[st]);
+  b.innerHTML = st === 'on' ? '<button class="btn" id="ptest">שלח בדיקה</button><button class="btn" id="poff">כבה התראות</button>'
+    : (st === 'unsupported' ? '' : '<button class="btn dark" id="pon">הפעל התראות</button>');
+  const run = async (fn, ok) => { b.querySelectorAll('button').forEach(x => x.disabled = true); try { await fn(); if (ok) toast(ok); } catch (e) { info('התראות', e.message || errText(e)); } pushPanel(); };
+  if ($('#pon')) $('#pon').onclick = () => run(pushEnable, 'ההתראות הופעלו ✓');
+  if ($('#poff')) $('#poff').onclick = () => run(pushDisable, 'ההתראות כבויות');
+  if ($('#ptest')) $('#ptest').onclick = () => run(async () => {
+    const r = await S.cloud.fn('push', {action: 'test'});
+    if (!r || !r.sent) throw new Error('הבדיקה לא הגיעה לטלפון' + (r && r.errors && r.errors.length ? ': ' + r.errors.join(', ') : '.'));
+  }, 'נשלחה בדיקה — ההתראה תגיע בעוד רגע');
+}
 function settings() {
   const email = S.cloud.user.email || S.session.email || '';
   const s = sheet(`<div class="set"><h3>הגדרות</h3>
     <p><b>${esc(myName())}</b> (${esc(email)})</p><p>תפקיד: ${S.role === 'admin' ? 'מנהל' : isTech() ? 'טכנאי' : 'משתמש'}</p>
     <p>מצב: ${S.readonly ? 'לא מקוון — קריאה בלבד' : 'מחובר'}</p><p>גרסה: ${APP_VERSION}</p>
+    ${isTech() ? `<p id="pstate">🔔 התראות: …</p><div class="btns" id="pbtns"></div>` : ''}
     <p style="color:#6b7785">הוספה למסך הבית: iPhone (Safari) — שיתוף ← "הוסף למסך הבית". Android (Chrome) — תפריט ⋮ ← "התקן אפליקציה" / "הוסף למסך הבית".<br>
     ניהול משתמשים והרשאות — בתוכנית במחשב (⚙ הגדרות ← משתמשים).</p>
     <div class="btns"><button class="btn" id="spw" ${S.readonly ? 'disabled' : ''}>שנה סיסמה</button><button class="btn red" id="sout">התנתק</button></div>
     <div class="btns"><button class="btn" id="sclose">סגור</button></div></div>`);
   s.querySelector('#sclose').onclick = closeSheet;
+  if (isTech()) pushPanel();
   s.querySelector('#sout').onclick = async () => {
     closeSheet();
     if (!await ask('התנתקות', 'להתנתק? בכניסה הבאה תצטרך להזין דוא"ל וסיסמה.', 'התנתק', 'ביטול', true)) return;
     if (S.rt) S.rt.stop();
     clearInterval(S.pollTimer); clearInterval(S.tokTimer);
+    await pushDisable();                                   // 1.48: no more notifications of this user here
     await S.cloud.signOut();
     S.session.rt = ''; saveSession(S.session);
     renderLogin('');
