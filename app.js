@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.49';
+const APP_VERSION = 'mobile 1.50';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -476,10 +476,10 @@ async function faultChanged() {   // עוצמות אור בארון → HP 30, �
 }
 function ask(title, text, yes = 'כן', no = 'ביטול', danger = false) {
   return new Promise(res => {
-    const s = sheet(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="btns"><button class="btn ${danger ? 'red' : 'dark'}" data-a="y">${esc(yes)}</button><button class="btn" data-a="n">${esc(no)}</button></div>`);
+    const s = sheet(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="btns"><button class="btn ${danger ? 'red' : 'dark'}" data-a="y">${esc(yes)}</button>${no ? `<button class="btn" data-a="n">${esc(no)}</button>` : ''}</div>`);   // 1.50: a message — one button only
     closeSheet.cb = res;
     s.querySelector('[data-a=y]').onclick = () => { closeSheet.cb = null; closeSheet(); res(true); };
-    s.querySelector('[data-a=n]').onclick = () => { closeSheet.cb = null; closeSheet(); res(false); };
+    if (no) s.querySelector('[data-a=n]').onclick = () => { closeSheet.cb = null; closeSheet(); res(false); };
   });
 }
 function info(title, text) { return ask(title, text, 'סגור', '', false).then(() => {}); }
