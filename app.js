@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.48';
+const APP_VERSION = 'mobile 1.49';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -109,7 +109,7 @@ function recToDb(vals, cols) {
   return o;
 }
 // 1.14: status groups and filter buttons — same colours as the computer (10.20)
-const CHIPS = [['all', 'הכל'], ['finish', 'FINISH'], ['wait', 'בהמתנה'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום'], ['late', 'באיחור']];   // 1.34: «באיחור»
+const CHIPS = [['all', 'הכל'], ['finish', 'FINISH'], ['wait', 'בהמתנה'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום'], ['late', 'באיחור'], ['other', 'אחר']];   // 1.34: «באיחור» · 1.49: «אחר» = no / non-standard status
 function savedChip() { try { const c = localStorage.getItem('tm_chip'); return CHIPS.some(x => x[0] === c) ? c : 'all'; } catch { return 'all'; } }
 function stClass(r) {
   const s = (r.status || '').toLowerCase();

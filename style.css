@@ -198,3 +198,4 @@ body.noscroll{overflow:hidden}
 .btn.tgt{padding:12px 8px;font-size:15px}
 .btn.tgt.done{background:#25864a;color:#fff;border-color:#25864a}
 .targets .hint{color:#6b7785;font-size:12.5px;margin:0}
+.chip.c-other{color:#6b7785;border-color:#9aa5b1;background:#eef1f4}.chip.on.c-other{background:#6b7785;border-color:#6b7785;color:#fff}   /* 1.49 */
