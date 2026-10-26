@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.50';
+const APP_VERSION = 'mobile 1.51';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1642,15 +1642,26 @@ async function showHistory(id) {
   const s = sheet(`<h3>היסטוריה</h3>${html}<div class="btns"><button class="btn" id="hclose">סגור</button></div>`);
   s.querySelector('#hclose').onclick = closeSheet;
 }
+async function pushLast() {        // 1.51: the last push that reached this phone (written by sw.js)
+  try { const c = await caches.open('tm-diag'); const r = await c.match('diag-last-push'); return r ? await r.json() : null; } catch { return null; }
+}
 async function pushPanel() {       // 1.48: in ⚙ — on / test / off
   const st = await pushState(), p = $('#pstate'), b = $('#pbtns');
   if (!p || !b) return;
   p.textContent = '🔔 התראות: ' + ({on: 'פעילות ✓', off: 'כבויות', denied: 'חסומות בדפדפן', unsupported: isIOS() ? 'רק מהאפליקציה במסך הבית' : 'אין תמיכה בדפדפן הזה'}[st]);
-  b.innerHTML = st === 'on' ? '<button class="btn" id="ptest">שלח בדיקה</button><button class="btn" id="poff">כבה התראות</button>'
+  const last = await pushLast();
+  const lp = $('#plast');
+  if (lp) lp.textContent = last ? `התראה אחרונה שהגיעה לטלפון: ${new Date(last.at).toLocaleString('he-IL')} — ${last.title || ''} ${last.shown ? '✓ הוצגה' : '✗ ' + (last.error || 'לא הוצגה')}`
+                                : 'התראה אחרונה שהגיעה לטלפון: עדיין לא הגיעה';
+  b.innerHTML = st === 'on' ? '<button class="btn" id="ptest">שלח בדיקה</button><button class="btn" id="plocal">בדיקה מקומית</button><button class="btn" id="poff">כבה התראות</button>'
     : (st === 'unsupported' ? '' : '<button class="btn dark" id="pon">הפעל התראות</button>');
   const run = async (fn, ok) => { b.querySelectorAll('button').forEach(x => x.disabled = true); try { await fn(); if (ok) toast(ok); } catch (e) { info('התראות', e.message || errText(e)); } pushPanel(); };
   if ($('#pon')) $('#pon').onclick = () => run(pushEnable, 'ההתראות הופעלו ✓');
   if ($('#poff')) $('#poff').onclick = () => run(pushDisable, 'ההתראות כבויות');
+  if ($('#plocal')) $('#plocal').onclick = () => run(async () => {     // 1.51: does this phone show our notifications at all?
+    const r = await navigator.serviceWorker.ready;
+    await r.showNotification('בדיקה מקומית ✓', {body: 'הטלפון מציג התראות של האפליקציה.', tag: 'tm-local', icon: 'icons/icon-192.png'});
+  }, 'נשלחה בדיקה מקומית');
   if ($('#ptest')) $('#ptest').onclick = () => run(async () => {
     const r = await S.cloud.fn('push', {action: 'test'});
     if (!r || !r.sent) throw new Error('הבדיקה לא הגיעה לטלפון' + (r && r.errors && r.errors.length ? ': ' + r.errors.join(', ') : '.'));
@@ -1661,7 +1672,7 @@ function settings() {
   const s = sheet(`<div class="set"><h3>הגדרות</h3>
     <p><b>${esc(myName())}</b> (${esc(email)})</p><p>תפקיד: ${S.role === 'admin' ? 'מנהל' : isTech() ? 'טכנאי' : 'משתמש'}</p>
     <p>מצב: ${S.readonly ? 'לא מקוון — קריאה בלבד' : 'מחובר'}</p><p>גרסה: ${APP_VERSION}</p>
-    ${isTech() ? `<p id="pstate">🔔 התראות: …</p><div class="btns" id="pbtns"></div>` : ''}
+    ${isTech() ? `<p id="pstate">🔔 התראות: …</p><p id="plast" style="color:#6b7785;font-size:13px"></p><div class="btns" id="pbtns"></div>` : ''}
     <p style="color:#6b7785">הוספה למסך הבית: iPhone (Safari) — שיתוף ← "הוסף למסך הבית". Android (Chrome) — תפריט ⋮ ← "התקן אפליקציה" / "הוסף למסך הבית".<br>
     ניהול משתמשים והרשאות — בתוכנית במחשב (⚙ הגדרות ← משתמשים).</p>
     <div class="btns"><button class="btn" id="spw" ${S.readonly ? 'disabled' : ''}>שנה סיסמה</button><button class="btn red" id="sout">התנתק</button></div>
