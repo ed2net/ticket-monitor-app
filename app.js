@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.52';
+const APP_VERSION = 'mobile 1.53';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1304,7 +1304,15 @@ function applyRow(row) {
 }
 
 // ───────────── 1.52: places in the card ─────────────
-const cabNow = () => { if (!S.card) return {key: '', site: '', cab: ''}; const v = values(); return {key: cabKey(v.site, v.cabinet), site: norm(v.site), cab: norm(v.cabinet)}; };
+function resolveCab(site, cab) {      // 1.53: without «מתחם» — the one saved cabinet (or the one מתחם of earlier faults) with this number
+  const key = cabKey(site, cab);
+  if (!key || norm(site)) return key;
+  const num = key.split('|')[1];
+  let c = new Set([...(S.cabs ? S.cabs.keys() : [])].filter(k => k.split('|')[1] === num && !k.startsWith('|')));
+  if (!c.size && S.recs) c = new Set([...S.recs.values()].filter(r => (r.fault_place || r.fault_geo) && norm(r.site) && cabKey('', r.cabinet) === key).map(r => cabKey(r.site, r.cabinet)));
+  return c.size === 1 ? [...c][0] : key;
+}
+const cabNow = () => { if (!S.card) return {key: '', site: '', cab: ''}; const v = values(); return {key: resolveCab(v.site, v.cabinet), site: norm(v.site), cab: norm(v.cabinet)}; };
 const cabPoint = () => { const k = cabNow().key, r = k && S.cabs ? S.cabs.get(k) : null; return r ? parseGeo(r.geo) : null; };
 function pastFaults(key, exceptId) {
   const out = [...S.recs.values()].filter(r => r.id !== exceptId && (r.fault_place || r.fault_geo) && cabKey(r.site, r.cabinet) === key);
@@ -1385,8 +1393,8 @@ function placeSheet(title, cur, note) {  // → {geo, link} / {deleted: true} / 
   });
 }
 async function pinCabinet() {
-  const {key, site, cab} = cabNow();
-  if (!key) return toast('מלא «ארונית» (ו«מתחם»)');
+  const {site, cab} = cabNow(), key = cabKey(site, cab);
+  if (!cab || !site) return info('מיקום הארונית', 'מלא «ארונית» ו«מתחם» — אותו מספר ארונית יש גם במתחמים אחרים.');
   const cur = S.cabs && S.cabs.get(key);
   const r = await placeSheet(`מיקום הארונית · ${site ? site + ' / ' : ''}${cab}`, cur ? cur.geo : '', 'נשמר מיד לכולם — גם במחשב. בפעם הבאה Waze ייקח ישר לארונית.');
   if (!r) return;
@@ -1721,7 +1729,19 @@ function message(v) {             // same as the desktop (10.25): only fields wi
     if (first && !/[\u0590-\u05ff]/.test(first)) first = '\u2066' + first + '\u2069';     // date / code keeps its own order
     lines.push(first ? `*${LABEL[c]}:* ${first}` : `*${LABEL[c]}:*`, ...parts.slice(1).map(x => '\u200f' + x));   // *…* = bold in WhatsApp
   }
+  const pl = placeLines(v, v.id != null ? v.id : (S.card ? S.card.id : null));     // 1.53: Waze links
+  if (pl.length) lines.push(...(lines.length ? ['\u200f━━━━━━━━━━━━'] : []), ...pl);
   return lines.join('\n'); }
+function placeLines(v, id) {       // 1.53 / 11.20: the cabinet, the place of the fault, the latest earlier fault of the cabinet
+  const out = [], key = resolveCab(v.site, v.cabinet), cr = key && S.cabs ? S.cabs.get(key) : null, cp = cr ? parseGeo(cr.geo) : null;
+  if (cp) out.push(`*מיקום הארונית:* ${wazeLL(cp)}`);
+  const own = parseGeo(v.fault_geo || '');
+  if (own) out.push(`*מקום התקלה:* ${norm(v.fault_place) ? norm(v.fault_place) + ' — ' : ''}${wazeLL(own)}`);
+  const past = key && S.recs ? pastFaults(key, id).filter(r => parseGeo(r.fault_geo)) : [];
+  if (past.length && !own) { const r = past[0];
+    out.push(`*תקלה קודמת בארונית (${(r.entry_date || '').slice(0, 10)}):* ${r.fault_place ? r.fault_place + ' — ' : ''}${wazeLL(parseGeo(r.fault_geo))}`); }
+  return out;
+}
 // 1.45: photos with the message — shrunk on the phone, then shared to WhatsApp (the group is chosen there)
 async function shrinkImage(file, max = 1600, q = 0.8) {
   try {
