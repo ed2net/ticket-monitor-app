@@ -216,3 +216,18 @@ body.noscroll{overflow:hidden}
 .pinmark{font-size:13px;margin-inline-start:4px}
 .sheet .hint{font-size:13px;color:#5f7184;margin:6px 0}
 #plink{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:15px;direction:ltr;text-align:left}
+
+/* 1.54: reminders */
+.remtag{display:inline-block;margin-inline-start:6px;padding:1px 7px;border-radius:10px;background:#efe6ff;color:#5b2ea6;border:1px solid #b99ae8;font-size:11.5px;font-weight:700;vertical-align:middle}
+.remtag.due{background:#8e5bd6;color:#fff;border-color:#8e5bd6}
+.card.remdue{background:#f1e6ff !important;box-shadow:inset -5px 0 0 #8e5bd6}
+.rembtn{margin:6px 12px 0;padding:7px 12px;border-radius:10px;background:#efe6ff;border:1px solid #b99ae8;color:#5b2ea6;font-weight:700}
+.remcard{margin:8px 12px;padding:10px 12px;border-radius:12px;background:#f7f2ff;border:1px solid #b99ae8;color:#3c1f73}
+.remcard.due{background:#f1e6ff;border-color:#8e5bd6}
+.remcard.gone{opacity:.35}
+.remcard .remtext{font-size:15px;font-weight:600;margin:4px 0}
+.remcard .remby{font-size:12px;color:#7a6a96}
+.sheet .remcard{margin:8px 0}
+#rdt,#rtx{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:15px;margin-bottom:6px}
+.remearly{display:flex;flex-wrap:wrap;gap:6px 14px;margin:2px 0 8px}
+.remearly label{display:flex;align-items:center;gap:5px;font-size:14px}

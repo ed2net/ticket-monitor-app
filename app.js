@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.53';
+const APP_VERSION = 'mobile 1.54';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -13,10 +13,10 @@ const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'
   ['solution', 'פתרון'], ['notes', 'הערות']];
 const COLS = F.map(x => x[0]);
 // 1.52 / 11.19 (SQL 24): the place of the cause of the fault — kept with the ticket, not one of the 21 fields
-const EXTRA = ['fault_place', 'fault_geo'];
+const EXTRA = ['fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before'];      // + 1.54 / 11.21 (SQL 25): a reminder
 const DB_COLS = COLS.concat(EXTRA);
 const LABEL = Object.fromEntries(F);
-const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date']);
+const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date', 'remind_at']);
 const DATE_ONLY = new Set(['escalation_date']);      // date without time
 const MULTI = new Set(['solution', 'notes']);
 // 1.8: the column that was 'תשתית' (database column infrastructure, always empty) is now 'קוד תקלה', filled from זיהוי תקלה
@@ -50,7 +50,7 @@ function fiberCode(fault, solution) {   // the קרע סיב cable decides the c
 }
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
-const NEW_COLS = new Set(['inspector', 'fault_place', 'fault_geo']);      // added later (SQL 06 / 24): the app still works without them
+const NEW_COLS = new Set(['inspector', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before']);      // added later (SQL 06 / 24): the app still works without them
 const MISSING = new Set();
 const META = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'];
 const sel = () => META.concat(DB_COLS.filter(c => !MISSING.has(c))).join(',');
@@ -731,6 +731,7 @@ async function fullLoad() {
   S.loaded = true; S.restOk = true;
   saveCache();
   loadCabs();
+  setTimeout(remDue, 300);                       // 1.54: due reminders when the app opens
 }
 async function loadCabs() {             // 1.52: in the background — the list is shown at once
   try { const rows = await S.cloud.loadCabs(); S.cabOk = rows !== null; S.cabs = new Map((rows || []).filter(r => r.key).map(r => [r.key, r])); }
@@ -814,6 +815,7 @@ async function sync() {
       for (const id of [...S.recs.keys()]) if (id > 0 && !ids.has(id)) { S.recs.delete(id); S.raw.delete(id); removed.push(id); }
     }
     if (changed.length || removed.length) { saveCache(); onDataChanged(changed, removed); }
+    remDue();
   } catch (e) {
     if (e instanceof AuthError) return sessionEnded();
     S.restOk = false;
@@ -932,8 +934,9 @@ function renderListBody() {
     const st = stClass(r), o = open[r.id];
     const addr = [r.city, [r.street, r.house].filter(Boolean).join(' '), r.cabinet ? 'ארונית ' + r.cabinet : ''].filter(Boolean).join(' · ');
     const left = [r.fault, r.contractor].filter(Boolean).join(' · ');
-    return `<button class="card st-${st}${!['finish', 'work', 'cont'].includes(st) && (r.entry_date || '').startsWith(today) ? ' today' : ''}${isLate(r) ? ' late' : ''} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
-      <div class="row1"><span class="fdt f-${st}">${isLate(r) ? '<span class="latemark">⏱</span>' : ''}${esc(r.fdt)}${r.fault_geo || r.fault_place ? '<span class="pinmark" title="מקום התקלה שמור">📍</span>' : ''}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
+    const rm = remState(r);           // 1.54: ⏰
+    return `<button class="card st-${st}${!['finish', 'work', 'cont'].includes(st) && (r.entry_date || '').startsWith(today) ? ' today' : ''}${isLate(r) ? ' late' : ''}${rm && rm.due ? ' remdue' : ''} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
+      <div class="row1"><span class="fdt f-${st}">${isLate(r) ? '<span class="latemark">⏱</span>' : ''}${esc(r.fdt)}${r.fault_geo || r.fault_place ? '<span class="pinmark" title="מקום התקלה שמור">📍</span>' : ''}${rm ? `<span class="remtag${rm.due ? ' due' : ''}">${esc(remLabel(rm))}</span>` : ''}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
       <div class="addr">${esc(addr) || '—'}</div>
       <div class="meta"><span>${esc(left)}</span><span dir="ltr">${esc(r.entry_date.slice(0, 5) + (r.entry_date.length > 10 ? r.entry_date.slice(10) : ''))}</span></div>
       ${o ? `<div class="who">${o.edit ? '✎ ' + esc(o.names.join(', ')) + ' עורך/ת את הטיקט כרגע' : '👁 ' + esc(o.names.join(', ')) + ' צופה בטיקט'}</div>` : ''}
@@ -963,7 +966,7 @@ function openCard(id, prefill) {
   guard();
 }
 // 1.44 / 10.75: a technician (role 'tech') sees only his tickets and changes only the closing fields
-const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes', 'fault_place', 'fault_geo']);   // 1.52: + the place of the fault
+const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before']);   // 1.52: + the place of the fault
 const isTech = () => S.role === 'tech';
 const canEdit = c => !S.readonly && !MISSING.has(c) && (!isTech() || TECH_EDIT.has(c));
 function fieldHtml(c) {
@@ -1061,7 +1064,7 @@ function renderCard() {
 
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew || isTech() ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
-    <div id="others"></div><div id="remote"></div>
+    <div id="others"></div><div id="remote"></div><div id="rembox"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
       <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all the fields, same order as the table / desktop card (+ מקום התקלה) -->
@@ -1086,6 +1089,7 @@ function renderCard() {
   if ($('#wazebtn')) $('#wazebtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openWaze(); };
   if ($('#gmapsbtn')) $('#gmapsbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openGmaps(); };
   placeHook();                                  // 1.52
+  remBox();                                     // 1.54
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
     const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
@@ -1301,6 +1305,93 @@ function applyRow(row) {
   const r = dbToRec(row), cur = S.recs.get(r.id);
   if (!cur || cur._v <= r._v) { S.recs.set(r.id, r); S.raw.set(r.id, row); }
   saveCache();
+}
+
+// ───────────── 1.54 / 11.21: reminders (for everybody) ─────────────
+function remState(r) { const at = r && r.remind_at ? parseDate(r.remind_at) : null; return at ? {due: at <= new Date(), at} : null; }
+const REM_EARLY = {d1: 'יום לפני', am: 'ב-08:00 באותו יום', 60: 'שעה לפני', 15: '15 דק׳ לפני'};
+function remEarly(r) {                    // [[Date, key]] of the earlier alerts, oldest first
+  const m = remState(r); if (!m) return [];
+  return String(r.remind_before || '').split(',').map(k => k.trim()).filter(Boolean).map(k => {
+    const t = new Date(m.at);
+    if (k === 'd1') t.setDate(t.getDate() - 1); else if (k === 'am') t.setHours(8, 0, 0, 0); else if (/^\d+$/.test(k)) t.setMinutes(t.getMinutes() - +k); else return null;
+    return t < m.at ? [t, k] : null;
+  }).filter(Boolean).sort((a, b) => a[0] - b[0]);
+}
+const pad2 = n => String(n).padStart(2, '0');
+function remLabel(rm) {
+  if (rm.due) return '⏰ עכשיו';
+  const a = rm.at, n = new Date(), hm = `${pad2(a.getHours())}:${pad2(a.getMinutes())}`;
+  return '⏰ ' + (a.toDateString() === n.toDateString() ? hm : `${pad2(a.getDate())}/${pad2(a.getMonth() + 1)} ${hm}`);
+}
+async function remUpdate(id, changes) {       // straight to the server (not through the card's «שמור»)
+  let rec = S.recs.get(id); if (!rec) return false;
+  const cols = Object.keys(changes), body = recToDb(changes, cols);
+  try {
+    for (let i = 0; i < 3; i++) {
+      const row = await S.cloud.updateTicket(id, rec._v, body);
+      if (row) { applyRow(row); if (S.card && S.card.id === id) { cols.forEach(c => { S.card.rec[c] = S.recs.get(id)[c]; S.card.before[c] = S.recs.get(id)[c]; }); S.card.rec._v = S.recs.get(id)._v; } return true; }
+      const cur = await S.cloud.getTicket(id); if (!cur) return false;
+      applyRow(cur); rec = S.recs.get(id);
+    }
+  } catch (e) { if (e instanceof AuthError) { sessionEnded(); return false; } info('תזכורת', 'לא נשמר:\n' + errText(e)); }
+  return false;
+}
+const remClear = () => ({remind_at: '', remind_text: '', remind_by: '', remind_before: ''});
+function remBox() {
+  const box = $('#rembox'); if (!box || !S.card) return;
+  const c = S.card, rec = c.id != null ? S.recs.get(c.id) || c.rec : null, off = MISSING.has('remind_at') || S.readonly || c.id == null;
+  const rm = remState(rec);
+  if (!rm) { box.innerHTML = off ? '' : '<button class="rembtn" id="remset" type="button">⏰ תזכורת</button>'; }
+  else box.innerHTML = `<div class="remcard${rm.due ? ' due' : ''}"><div><b>${esc(remLabel(rm))}</b> · <bdi dir="ltr">${esc(rec.remind_at)}</bdi></div>
+      <div class="remtext">${esc(rec.remind_text || 'תזכורת')}</div>${rec.remind_by ? `<div class="remby">${esc(rec.remind_by)}</div>` : ''}
+      ${off ? '' : '<div class="btns"><button class="btn save" id="remdone" type="button">✓ בוצע</button><button class="btn" id="remset" type="button">שנה</button></div>'}</div>`;
+  const set = $('#remset'); if (set) set.onclick = e => { e.preventDefault(); remSheet(c.id); };
+  const done = $('#remdone'); if (done) done.onclick = async e => { e.preventDefault(); if (await remUpdate(c.id, remClear())) { toast('התזכורת בוצעה'); remBox(); } };
+}
+function remSheet(id) {
+  const rec = S.recs.get(id), rm = remState(rec);
+  const d = rm ? rm.at : new Date(Date.now() + 3600e3);
+  const local = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${rm ? pad2(d.getMinutes()) : '00'}`;
+  sheet(`<h3>⏰ תזכורת · טיקט ${esc(rec.fdt)}</h3>
+    <div class="hint">מתי:</div><input id="rdt" type="datetime-local" value="${local}" class="ltr">
+    <div class="hint">להזכיר גם:</div><div class="remearly">${Object.entries(REM_EARLY).map(([k, t]) =>
+      `<label><input type="checkbox" data-early="${k}" ${String(rec.remind_before || '').split(',').includes(k) ? 'checked' : ''}> ${esc(t)}</label>`).join('')}</div>
+    <div class="hint">מה להזכיר:</div><input id="rtx" value="${esc(rec.remind_text || '')}" placeholder="למשל: להתקשר ללקוח">
+    <div class="hint">התזכורת לכולם — גם במחשב.</div>
+    <div class="btns"><button class="btn save" id="rok">שמור</button>${rm ? '<button class="btn red" id="rdel">מחק</button>' : ''}<button class="btn" id="rno">ביטול</button></div>`);
+  $('#rno').onclick = () => closeSheet();
+  if ($('#rdel')) $('#rdel').onclick = async () => { closeSheet(); if (await remUpdate(id, remClear())) remBox(); };
+  $('#rok').onclick = async () => {
+    const v = $('#rdt').value; if (!v) return;
+    const dt = new Date(v), text = norm($('#rtx').value) || 'תזכורת';
+    const early = [...document.querySelectorAll('.sheet [data-early]')].filter(x => x.checked).map(x => x.dataset.early).join(',');
+    closeSheet();
+    if (await remUpdate(id, {remind_at: fmtDate(dt), remind_text: text, remind_by: myName(), remind_before: early})) { toast('התזכורת נשמרה'); remBox(); }
+  };
+}
+function remDue() {                       // the due reminders — once per opening of the app (per time)
+  if (!S.loaded || S.view !== 'list' || document.querySelector('.sheet')) return;
+  S.remShown = S.remShown || new Set();
+  const now = new Date(), sig = r => { const m = remState(r); if (!m) return null; if (m.due) return r.id + '|' + r.remind_at;
+    const past = remEarly(r).filter(x => x[0] <= now); return past.length ? r.id + '|' + r.remind_at + '|' + past[past.length - 1][1] : null; };
+  const due = [...S.recs.values()].filter(r => { const g = sig(r); return g && !S.remShown.has(g); });
+  if (!due.length) return;
+  due.forEach(r => S.remShown.add(sig(r)));
+  const one = r => `<div class="remcard${remState(r).due ? ' due' : ''}"><div><b>טיקט <bdi dir="ltr">${esc(r.fdt)}</bdi></b> · ${esc([r.city, [r.street, r.house].filter(Boolean).join(' ')].filter(Boolean).join(' · '))}</div>
+      ${remState(r).due ? '' : `<div class="remby">תזכורת מוקדמת · מתוכנן ל: <bdi dir="ltr">${esc(r.remind_at)}</bdi></div>`}
+      <div class="remtext">${esc(r.remind_text || 'תזכורת')}</div>
+      <div class="btns"><button class="btn save" data-r="done" data-id="${r.id}">✓ בוצע</button><button class="btn" data-r="open" data-id="${r.id}">פתח</button>${S.readonly || MISSING.has('remind_at') ? '' : `<button class="btn" data-r="hour" data-id="${r.id}">דחה שעה</button>`}</div></div>`;
+  sheet(`<h3>⏰ תזכורות (${due.length})</h3>${due.slice(0, 6).map(one).join('')}<div class="btns"><button class="btn" id="rclose">סגור</button></div>`);
+  $('#rclose').onclick = () => closeSheet();
+  document.querySelectorAll('.sheet [data-r]').forEach(b => b.onclick = async () => {
+    const id = +b.dataset.id, a = b.dataset.r;
+    if (a === 'open') { closeSheet(); return openCard(id); }
+    b.closest('.remcard').classList.add('gone');
+    const ok = a === 'done' ? await remUpdate(id, remClear()) : await remUpdate(id, {remind_at: fmtDate(new Date(Date.now() + 3600e3))});
+    if (ok && !document.querySelector('.sheet .remcard:not(.gone)')) closeSheet();
+    if (S.view === 'list') renderListBody();
+  });
 }
 
 // ───────────── 1.52: places in the card ─────────────
