@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.54';
+const APP_VERSION = 'mobile 1.55';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1309,16 +1309,18 @@ function applyRow(row) {
 
 // ───────────── 1.54 / 11.21: reminders (for everybody) ─────────────
 function remState(r) { const at = r && r.remind_at ? parseDate(r.remind_at) : null; return at ? {due: at <= new Date(), at} : null; }
-const REM_EARLY = {d1: 'יום לפני', am: 'ב-08:00 באותו יום', 60: 'שעה לפני', 15: '15 דק׳ לפני'};
-function remEarly(r) {                    // [[Date, key]] of the earlier alerts, oldest first
+function remEarly(r) {                    // [[Date, key]] of the more (earlier) times, oldest first — 1.55: 'dd/mm/yyyy HH:MM;…'
   const m = remState(r); if (!m) return [];
-  return String(r.remind_before || '').split(',').map(k => k.trim()).filter(Boolean).map(k => {
-    const t = new Date(m.at);
-    if (k === 'd1') t.setDate(t.getDate() - 1); else if (k === 'am') t.setHours(8, 0, 0, 0); else if (/^\d+$/.test(k)) t.setMinutes(t.getMinutes() - +k); else return null;
-    return t < m.at ? [t, k] : null;
+  return String(r.remind_before || '').split(/[;,]/).map(k => k.trim()).filter(Boolean).map(k => {
+    let t = new Date(m.at);
+    if (k === 'd1') t.setDate(t.getDate() - 1); else if (k === 'am') t.setHours(8, 0, 0, 0);
+    else if (/^\d+$/.test(k)) t.setMinutes(t.getMinutes() - +k); else t = parseDate(k);
+    return t && t < m.at ? [t, k] : null;
   }).filter(Boolean).sort((a, b) => a[0] - b[0]);
 }
+const dtLocal = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 const pad2 = n => String(n).padStart(2, '0');
+const fmtDateT = d => `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;   // always with the time
 function remLabel(rm) {
   if (rm.due) return '⏰ עכשיו';
   const a = rm.at, n = new Date(), hm = `${pad2(a.getHours())}:${pad2(a.getMinutes())}`;
@@ -1355,19 +1357,29 @@ function remSheet(id) {
   const local = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${rm ? pad2(d.getMinutes()) : '00'}`;
   sheet(`<h3>⏰ תזכורת · טיקט ${esc(rec.fdt)}</h3>
     <div class="hint">מתי:</div><input id="rdt" type="datetime-local" value="${local}" class="ltr">
-    <div class="hint">להזכיר גם:</div><div class="remearly">${Object.entries(REM_EARLY).map(([k, t]) =>
-      `<label><input type="checkbox" data-early="${k}" ${String(rec.remind_before || '').split(',').includes(k) ? 'checked' : ''}> ${esc(t)}</label>`).join('')}</div>
+    <div class="hint">תזכורות נוספות:</div><div id="rextra">${remEarly(rec).map(x => `<div class="xrow"><input type="datetime-local" class="rx" value="${dtLocal(x[0])}"><button class="btn" type="button" data-xdel>✕</button></div>`).join('')}</div>
+    <button class="rembtn" id="radd" type="button">+ להוסיף תזכורת</button>
     <div class="hint">מה להזכיר:</div><input id="rtx" value="${esc(rec.remind_text || '')}" placeholder="למשל: להתקשר ללקוח">
     <div class="hint">התזכורת לכולם — גם במחשב.</div>
     <div class="btns"><button class="btn save" id="rok">שמור</button>${rm ? '<button class="btn red" id="rdel">מחק</button>' : ''}<button class="btn" id="rno">ביטול</button></div>`);
   $('#rno').onclick = () => closeSheet();
+  const hookDel = () => document.querySelectorAll('[data-xdel]').forEach(b => b.onclick = () => b.closest('.xrow').remove());
+  hookDel();
+  $('#radd').onclick = () => {
+    const base = $('#rdt').value ? new Date($('#rdt').value) : new Date(Date.now() + 3600e3);
+    const t = new Date(base); t.setDate(t.getDate() - 1); if (t < new Date()) t.setTime(Date.now() + 3600e3);
+    $('#rextra').insertAdjacentHTML('beforeend', `<div class="xrow"><input type="datetime-local" class="rx" value="${dtLocal(t)}"><button class="btn" type="button" data-xdel>✕</button></div>`);
+    hookDel();
+  };
   if ($('#rdel')) $('#rdel').onclick = async () => { closeSheet(); if (await remUpdate(id, remClear())) remBox(); };
   $('#rok').onclick = async () => {
     const v = $('#rdt').value; if (!v) return;
-    const dt = new Date(v), text = norm($('#rtx').value) || 'תזכורת';
-    const early = [...document.querySelectorAll('.sheet [data-early]')].filter(x => x.checked).map(x => x.dataset.early).join(',');
+    const text = norm($('#rtx').value) || 'תזכורת';
+    const all = [v, ...[...document.querySelectorAll('.sheet .rx')].map(x => x.value).filter(Boolean)].map(x => new Date(x)).filter(d => !isNaN(d))
+      .sort((a, b) => a - b).filter((d, i, a) => !i || d - a[i - 1]);         // the latest = the main time (the purple card)
+    const main = all[all.length - 1], more = all.slice(0, -1).map(fmtDateT).join(';');
     closeSheet();
-    if (await remUpdate(id, {remind_at: fmtDate(dt), remind_text: text, remind_by: myName(), remind_before: early})) { toast('התזכורת נשמרה'); remBox(); }
+    if (await remUpdate(id, {remind_at: fmtDateT(main), remind_text: text, remind_by: myName(), remind_before: more})) { toast('התזכורת נשמרה'); remBox(); }
   };
 }
 function remDue() {                       // the due reminders — once per opening of the app (per time)
@@ -1379,7 +1391,7 @@ function remDue() {                       // the due reminders — once per open
   if (!due.length) return;
   due.forEach(r => S.remShown.add(sig(r)));
   const one = r => `<div class="remcard${remState(r).due ? ' due' : ''}"><div><b>טיקט <bdi dir="ltr">${esc(r.fdt)}</bdi></b> · ${esc([r.city, [r.street, r.house].filter(Boolean).join(' ')].filter(Boolean).join(' · '))}</div>
-      ${remState(r).due ? '' : `<div class="remby">תזכורת מוקדמת · מתוכנן ל: <bdi dir="ltr">${esc(r.remind_at)}</bdi></div>`}
+      ${remState(r).due ? '' : `<div class="remby">תזכורת נוספת · האחרונה: <bdi dir="ltr">${esc(r.remind_at)}</bdi></div>`}
       <div class="remtext">${esc(r.remind_text || 'תזכורת')}</div>
       <div class="btns"><button class="btn save" data-r="done" data-id="${r.id}">✓ בוצע</button><button class="btn" data-r="open" data-id="${r.id}">פתח</button>${S.readonly || MISSING.has('remind_at') ? '' : `<button class="btn" data-r="hour" data-id="${r.id}">דחה שעה</button>`}</div></div>`;
   sheet(`<h3>⏰ תזכורות (${due.length})</h3>${due.slice(0, 6).map(one).join('')}<div class="btns"><button class="btn" id="rclose">סגור</button></div>`);
