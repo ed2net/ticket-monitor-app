@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.55';
+const APP_VERSION = 'mobile 1.56';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1359,7 +1359,7 @@ function remSheet(id) {
     <div class="hint">מתי:</div><input id="rdt" type="datetime-local" value="${local}" class="ltr">
     <div class="hint">תזכורות נוספות:</div><div id="rextra">${remEarly(rec).map(x => `<div class="xrow"><input type="datetime-local" class="rx" value="${dtLocal(x[0])}"><button class="btn" type="button" data-xdel>✕</button></div>`).join('')}</div>
     <button class="rembtn" id="radd" type="button">+ להוסיף תזכורת</button>
-    <div class="hint">מה להזכיר:</div><input id="rtx" value="${esc(rec.remind_text || '')}" placeholder="למשל: להתקשר ללקוח">
+    <div class="hint">מה להזכיר:</div><textarea id="rtx" rows="4" placeholder="למשל: להתקשר ללקוח">${esc(rec.remind_text || '')}</textarea>
     <div class="hint">התזכורת לכולם — גם במחשב.</div>
     <div class="btns"><button class="btn save" id="rok">שמור</button>${rm ? '<button class="btn red" id="rdel">מחק</button>' : ''}<button class="btn" id="rno">ביטול</button></div>`);
   $('#rno').onclick = () => closeSheet();
