@@ -199,3 +199,20 @@ body.noscroll{overflow:hidden}
 .btn.tgt.done{background:#25864a;color:#fff;border-color:#25864a}
 .targets .hint{color:#6b7785;font-size:12.5px;margin:0}
 .chip.c-other{color:#6b7785;border-color:#9aa5b1;background:#eef1f4}.chip.on.c-other{background:#6b7785;border-color:#6b7785;color:#fff}   /* 1.49 */
+
+/* 1.52: places — the cabinet and the place of the fault */
+.pinbtn{display:inline-block;padding:5px 10px;border-radius:8px;background:#fff1f0;border:1px solid #e57373;color:#a32020;font-size:12.5px;font-weight:700}
+.navbtns button:disabled,.navbtns button.off{opacity:.38}
+.cabhint{margin:4px 0 6px;padding:8px 10px;border-radius:10px;background:#fff7e0;border:1px solid #e6c766;color:#5a4400;font-size:13px;line-height:1.45}
+.cabhint .wazebtn{margin:6px 0 0 0;display:block;width:max-content}
+.geoline{font-size:12px;color:#2e7d32;margin-top:4px;min-height:14px}
+.geoline.bad{color:#b23b2a}
+.f.place{flex-wrap:wrap;gap:6px}
+.f.place>label:not(.cal){flex:1 1 100%;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.f.place .navbtns{margin-top:0}
+.f.place input[data-c="fault_place"]{flex:1 1 100%}
+.f.place .geoline{flex:1 1 100%;margin-top:0}
+.btn.gps{display:block;width:100%;margin:6px 0 10px;padding:12px;font-size:16px;font-weight:700;background:#e8f5e9;border:1px solid #7cb07f;color:#1f6b25;border-radius:12px}
+.pinmark{font-size:13px;margin-inline-start:4px}
+.sheet .hint{font-size:13px;color:#5f7184;margin:6px 0}
+#plink{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:15px;direction:ltr;text-align:left}

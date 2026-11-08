@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.51';
+const APP_VERSION = 'mobile 1.52';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -12,6 +12,9 @@ const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'
   ['close_type', 'סוג סגירת התקלה'], ['status', 'סטטוס'], ['infrastructure', 'קוד תקלה'], ['inspector', 'מפקח'], ['close_date', 'תאריך סגירה'],
   ['solution', 'פתרון'], ['notes', 'הערות']];
 const COLS = F.map(x => x[0]);
+// 1.52 / 11.19 (SQL 24): the place of the cause of the fault — kept with the ticket, not one of the 21 fields
+const EXTRA = ['fault_place', 'fault_geo'];
+const DB_COLS = COLS.concat(EXTRA);
 const LABEL = Object.fromEntries(F);
 const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date']);
 const DATE_ONLY = new Set(['escalation_date']);      // date without time
@@ -47,10 +50,10 @@ function fiberCode(fault, solution) {   // the קרע סיב cable decides the c
 }
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
-const NEW_COLS = new Set(['inspector']);      // added later (SQL 06): the app still works on a database without them
+const NEW_COLS = new Set(['inspector', 'fault_place', 'fault_geo']);      // added later (SQL 06 / 24): the app still works without them
 const MISSING = new Set();
 const META = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'];
-const sel = () => META.concat(COLS.filter(c => !MISSING.has(c))).join(',');
+const sel = () => META.concat(DB_COLS.filter(c => !MISSING.has(c))).join(',');
 const DONE_WORDS = ['finish', 'סגור', 'נסגר', 'בוצע', 'done', 'closed'];
 
 // ───────────── helpers ─────────────
@@ -93,7 +96,7 @@ const nowText = () => { const d = new Date(); return `${pad(d.getDate())}/${pad(
 
 function dbToRec(row) {
   const r = {};
-  for (const c of COLS) r[c] = DATE_COLS.has(c) ? serverDateText(row[c]) : norm(row[c]);
+  for (const c of DB_COLS) r[c] = DATE_COLS.has(c) ? serverDateText(row[c]) : norm(row[c]);
   r.city = normCity(r.city);
   r.id = +row.id; r._v = +(row.version || 1); r._ua = row.updated_at || ''; r._ub = row.updated_by || '';
   r._s = COLS.map(c => r[c]).join(' ').toLowerCase();
@@ -108,6 +111,35 @@ function recToDb(vals, cols) {
   }
   return o;
 }
+// ───────────── 1.52 / 11.19: places — the cabinet (for everybody, by מתחם + ארונית) and the place of the fault ─────────────
+const NUM = '(-?\\d{1,3}\\.\\d+)';
+const GEO_RX = [new RegExp('!3d' + NUM + '!4d' + NUM), new RegExp('@' + NUM + ',\\s*' + NUM),
+  new RegExp('[?&;](?:q|query|ll|sll|daddr|destination|center|saddr|cbll|to)=(?:loc:|ll\\.)?\\s*' + NUM + '\\s*(?:,|%2C)\\s*\\+?' + NUM, 'i'),
+  new RegExp('\\bll\\.' + NUM + '(?:,|%2C)' + NUM, 'i'), new RegExp('\\bgeo:' + NUM + ',' + NUM),
+  new RegExp('^\\s*\\(?' + NUM + '\\s*[,; ]\\s*' + NUM + '\\)?\\s*$'),
+  /(?<![\d.])(-?\d{1,2}\.\d{4,})\s*,\s*(-?\d{1,3}\.\d{4,})(?![\d.])/];
+const GH = '0123456789bcdefghjkmnpqrstuvwxyz';
+function geohash(h) {                     // Waze share links waze.com/ul/h<geohash>
+  const lat = [-90, 90], lng = [-180, 180]; let even = true;
+  for (const ch of h.toLowerCase()) { const cd = GH.indexOf(ch); if (cd < 0) return null;
+    for (const m of [16, 8, 4, 2, 1]) { const r = even ? lng : lat, mid = (r[0] + r[1]) / 2; if (cd & m) r[0] = mid; else r[1] = mid; even = !even; } }
+  return [(lat[0] + lat[1]) / 2, (lng[0] + lng[1]) / 2];
+}
+const geoOk = (a, b) => a >= -90 && a <= 90 && b >= -180 && b <= 180 && !(a === 0 && b === 0);
+const r6 = x => Math.round(x * 1e6) / 1e6;
+function parseGeo(text) {                 // [lat, lng] from a link (WhatsApp / Google Maps / Waze) or coordinates; null
+  let t = String(text || '').trim(); try { t = decodeURIComponent(t); } catch {}
+  if (!t) return null;
+  const w = t.match(/waze\.com\/ul\/h([0-9b-hjkmnp-z]{5,12})/i);
+  if (w) { const p = geohash(w[1]); if (p && geoOk(...p)) return [r6(p[0]), r6(p[1])]; }
+  for (const rx of GEO_RX) { const m = t.match(rx); if (m) { const a = +m[1], b = +m[2]; if (geoOk(a, b)) return [r6(a), r6(b)]; } }
+  return null;
+}
+const isShortLink = t => /^https?:\/\//i.test(String(t || '').trim()) && /(maps\.app\.goo\.gl|goo\.gl|g\.co\/)/i.test(t) && !parseGeo(t);
+const geoText = p => p ? `${p[0].toFixed(6)},${p[1].toFixed(6)}` : '';
+const wazeLL = p => `https://waze.com/ul?ll=${p[0].toFixed(6)},${p[1].toFixed(6)}&navigate=yes`;
+const gmapsLL = p => `https://www.google.com/maps/search/?api=1&query=${p[0].toFixed(6)},${p[1].toFixed(6)}`;
+const cabKey = (site, cab) => { const n = v => String(v || '').replace(/\s+/g, '').toLowerCase(); return n(cab) ? `${n(site)}|${n(cab)}` : ''; };
 // 1.14: status groups and filter buttons — same colours as the computer (10.20)
 const CHIPS = [['all', 'הכל'], ['finish', 'FINISH'], ['wait', 'בהמתנה'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום'], ['late', 'באיחור'], ['other', 'אחר']];   // 1.34: «באיחור» · 1.49: «אחר» = no / non-standard status
 function savedChip() { try { const c = localStorage.getItem('tm_chip'); return CHIPS.some(x => x[0] === c) ? c : 'all'; } catch { return 'all'; } }
@@ -245,6 +277,14 @@ class Cloud {
     const r = await this.req('PATCH', `/rest/v1/tickets?id=eq.${+id}&version=eq.${+version}&select=${sel()}`, body, {Prefer: 'return=representation'});
     return r && r[0] ? r[0] : null;
   }
+  async loadCabs() {             // 1.52: places of the cabinets; null = table missing (SQL 24 not run)
+    try { return await this.fetchAll('cabinet_locations', 'select=key,site,cabinet,geo,link,note,updated_at&order=key'); }
+    catch (e) { if (e instanceof OfflineError || e instanceof AuthError) throw e; if (e.status === 404 || ['42P01', 'PGRST205'].includes(e.code) || /cabinet_locations/.test(e.message)) return null; throw e; }
+  }
+  async getCab(key) { const r = await this.req('GET', `/rest/v1/cabinet_locations?select=key,site,cabinet,geo,link,note,updated_at&key=eq.${encodeURIComponent(key)}`); return r && r[0] ? r[0] : null; }
+  async saveCab(row) { const r = await this.req('POST', '/rest/v1/cabinet_locations?on_conflict=key&select=key,site,cabinet,geo,link,note,updated_at',
+    {key: row.key, site: row.site || '', cabinet: row.cabinet || '', geo: row.geo || '', link: row.link || '', note: row.note || ''}, {Prefer: 'resolution=merge-duplicates,return=representation'}); return r && r[0] ? r[0] : row; }
+  deleteCab(key) { return this.req('DELETE', `/rest/v1/cabinet_locations?key=eq.${encodeURIComponent(key)}`); }
   ticketHistory(id) { return this.fetchAll('ticket_log', `select=id,action,changed,old_row,new_row,by_user,at&ticket_id=eq.${+id}&order=at.desc`); }
   changePassword(pw) { return this.req('PUT', '/auth/v1/user', {password: pw}); }
   rpc(fn, args) { return this.req('POST', `/rest/v1/rpc/${fn}`, args || {}); }                       // 1.48
@@ -690,6 +730,11 @@ async function fullLoad() {
   S.lookups = lookups;
   S.loaded = true; S.restOk = true;
   saveCache();
+  loadCabs();
+}
+async function loadCabs() {             // 1.52: in the background — the list is shown at once
+  try { const rows = await S.cloud.loadCabs(); S.cabOk = rows !== null; S.cabs = new Map((rows || []).filter(r => r.key).map(r => [r.key, r])); }
+  catch { /* offline — later */ }
 }
 function setProfiles(ps) {
   S.names = Object.fromEntries(ps.map(p => [p.id, (p.display_name || '').trim()]));
@@ -888,7 +933,7 @@ function renderListBody() {
     const addr = [r.city, [r.street, r.house].filter(Boolean).join(' '), r.cabinet ? 'ארונית ' + r.cabinet : ''].filter(Boolean).join(' · ');
     const left = [r.fault, r.contractor].filter(Boolean).join(' · ');
     return `<button class="card st-${st}${!['finish', 'work', 'cont'].includes(st) && (r.entry_date || '').startsWith(today) ? ' today' : ''}${isLate(r) ? ' late' : ''} ${o ? (o.edit ? 'edit' : 'view') : ''}" data-id="${r.id}">
-      <div class="row1"><span class="fdt f-${st}">${isLate(r) ? '<span class="latemark">⏱</span>' : ''}${esc(r.fdt)}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
+      <div class="row1"><span class="fdt f-${st}">${isLate(r) ? '<span class="latemark">⏱</span>' : ''}${esc(r.fdt)}${r.fault_geo || r.fault_place ? '<span class="pinmark" title="מקום התקלה שמור">📍</span>' : ''}</span><span class="badge b-${st}">${esc(stText(r))}</span></div>
       <div class="addr">${esc(addr) || '—'}</div>
       <div class="meta"><span>${esc(left)}</span><span dir="ltr">${esc(r.entry_date.slice(0, 5) + (r.entry_date.length > 10 ? r.entry_date.slice(10) : ''))}</span></div>
       ${o ? `<div class="who">${o.edit ? '✎ ' + esc(o.names.join(', ')) + ' עורך/ת את הטיקט כרגע' : '👁 ' + esc(o.names.join(', ')) + ' צופה בטיקט'}</div>` : ''}
@@ -908,7 +953,7 @@ function renderListBody() {
 // ───────────── card ─────────────
 function openCard(id, prefill) {
   const rec = id == null ? null : S.recs.get(id);
-  const vals = rec ? Object.fromEntries(COLS.map(c => [c, rec[c]])) : Object.fromEntries(COLS.map(c => [c, c === 'status' ? 'בהמתנה' : '']));   // 1.25: new = בהמתנה
+  const vals = rec ? Object.fromEntries(DB_COLS.map(c => [c, rec[c] || ''])) : Object.fromEntries(DB_COLS.map(c => [c, c === 'status' ? 'בהמתנה' : '']));   // 1.25: new = בהמתנה
   if (!rec && prefill) for (const c of COLS) if (!DUP_SKIP.has(c) && norm(prefill[c])) vals[c] = prefill[c];      // 1.40: «שכפל»
   S.card = {id, rec: rec ? {...rec} : null, before: vals, remote: null, deleted: false, dirty: false, extra: id == null};
   S.view = 'card';
@@ -918,7 +963,7 @@ function openCard(id, prefill) {
   guard();
 }
 // 1.44 / 10.75: a technician (role 'tech') sees only his tickets and changes only the closing fields
-const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes']);
+const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes', 'fault_place', 'fault_geo']);   // 1.52: + the place of the fault
 const isTech = () => S.role === 'tech';
 const canEdit = c => !S.readonly && !MISSING.has(c) && (!isTech() || TECH_EDIT.has(c));
 function fieldHtml(c) {
@@ -932,9 +977,18 @@ function fieldHtml(c) {
   const fiber = c === 'solution' && canEdit(c) ? '<button class="fiberbtn" id="fiberbtn">✂ קרע סיב</button>'
     : c === 'site' ? '<button class="folderbtn" id="folderbtn" type="button">📁 תיקיית מתחם</button>'      // 1.39
     : c === 'contractor' || c === 'inspector' ? `<button class="contactbtn" data-contact="${c}" type="button">📞 פרטי קשר</button>`      // 1.41 / 1.42
-    : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>' : '';     // 1.22 Waze, 1.26 Google Maps
+    : c === 'street' ? '<span class="navbtns"><button class="wazebtn" id="wazebtn" type="button">Waze</button><button class="gmapsbtn" id="gmapsbtn" type="button">Maps</button></span>'     // 1.22 Waze, 1.26 Google Maps
+    : c === 'cabinet' ? `<span class="navbtns"><button class="wazebtn" id="cabwaze" type="button">Waze לארונית</button>${S.readonly ? '' : '<button class="pinbtn" id="cabpin" type="button">📍 מיקום הארונית</button>'}</span>` : '';   // 1.52
   const req = reqFields(), vm = isTech() && !canEdit(c) ? '' : req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.44: a technician — only his fields   // 1.29: required fields
-  return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`;
+  return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`
+    + (c === 'cabinet' ? '<div class="cabhint hidden" id="cabhint"></div>' : c === 'fault' ? placeHtml() : '');
+}
+function placeHtml() {                  // 1.52: «מקום התקלה» — a short text + the point (GPS / link)
+  const b = S.card.before, ro = !canEdit('fault_place') ? 'readonly' : '';
+  const pin = canEdit('fault_geo') ? '<button class="pinbtn" id="fpin" type="button">📍 מיקום</button>' : '';
+  return `<div class="f place" id="f-fault_place"><label>מקום התקלה<span class="navbtns"><button class="wazebtn" id="fwaze" type="button">Waze</button><button class="gmapsbtn" id="fmaps" type="button">Maps</button>${pin}</span></label>
+    <input data-c="fault_place" ${ro} value="${esc(b.fault_place || '')}" placeholder="תיאור קצר (לא חובה) — ריתוך בארון 104-1, כבל קרוע…" autocomplete="off">
+    <input type="hidden" data-c="fault_geo" value="${esc(b.fault_geo || '')}"><div class="geoline" id="fgeo"></div></div>`;
 }
 function datalists() {
   const out = [];
@@ -1010,7 +1064,7 @@ function renderCard() {
     <div id="others"></div><div id="remote"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
-      <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all 20 fields, same order as the table / desktop card -->
+      <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all the fields, same order as the table / desktop card (+ מקום התקלה) -->
       ${datalists()}
       ${isTech() && !isNew && !S.readonly && stClass(rec) !== 'finish' ? '<button class="btn closet" id="closet">✓ סגור תקלה (FINISH)</button>' : ''}
     </div>
@@ -1031,6 +1085,7 @@ function renderCard() {
   if ($('#folderbtn')) $('#folderbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openSiteFolder(); };
   if ($('#wazebtn')) $('#wazebtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openWaze(); };
   if ($('#gmapsbtn')) $('#gmapsbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openGmaps(); };
+  placeHook();                                  // 1.52
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
     const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
@@ -1049,8 +1104,8 @@ function renderCard() {
   window.scrollTo(0, 0);
 }
 const inputOf = c => document.querySelector(`[data-c="${c}"]`);
-function values() { const v = {}; for (const c of COLS) { const el = inputOf(c); v[c] = el ? norm(el.value) : S.card.before[c]; } return v; }
-function changedCols(v) { return COLS.filter(c => norm(v[c]) !== norm(S.card.before[c])); }
+function values() { const v = {}; for (const c of DB_COLS) { const el = inputOf(c); v[c] = el ? norm(el.value) : (S.card.before[c] || ''); } return v; }
+function changedCols(v) { return DB_COLS.filter(c => !MISSING.has(c) && norm(v[c]) !== norm(S.card.before[c])); }
 // 1.25 / 10.39: תאריך סגירה → FINISH; otherwise קבלן מבצע + תאריך הקפצה → בעבודה, without them → בהמתנה.
 // Only empty / בהמתנה / בעבודה switch; FINISH goes back only when תאריך סגירה is cleared; המשך טיפול stays. null = leave.
 function autoStatus(status, contractor, bump, close, closing) {
@@ -1107,6 +1162,7 @@ function updateSave() {
   markClosing();
   const v = values(), ch = new Set(changedCols(v));
   for (const c of COLS) { const f = $('#f-' + c); if (f) f.classList.toggle('changed', ch.has(c)); }
+  const fp = $('#f-fault_place'); if (fp) fp.classList.toggle('changed', ch.has('fault_place') || ch.has('fault_geo'));   // 1.52
   const b = $('#save');
   if (b) { b.disabled = S.readonly || S.card.deleted || ch.size === 0; b.textContent = ch.size ? `שמור (${ch.size})` : 'שמור'; }
 }
@@ -1205,7 +1261,7 @@ async function save() {
   const btn = $('#save'); btn.disabled = true; btn.textContent = 'שומר...';
   try {
     if (c.id == null) {
-      const row = await S.cloud.insertTicket(recToDb(v, COLS));
+      const row = await S.cloud.insertTicket(recToDb(v, DB_COLS));
       applyRow(row);
       toast('הטיקט החדש נשמר');
       c.dirty = false; renderList(); return;
@@ -1245,6 +1301,110 @@ function applyRow(row) {
   const r = dbToRec(row), cur = S.recs.get(r.id);
   if (!cur || cur._v <= r._v) { S.recs.set(r.id, r); S.raw.set(r.id, row); }
   saveCache();
+}
+
+// ───────────── 1.52: places in the card ─────────────
+const cabNow = () => { if (!S.card) return {key: '', site: '', cab: ''}; const v = values(); return {key: cabKey(v.site, v.cabinet), site: norm(v.site), cab: norm(v.cabinet)}; };
+const cabPoint = () => { const k = cabNow().key, r = k && S.cabs ? S.cabs.get(k) : null; return r ? parseGeo(r.geo) : null; };
+function pastFaults(key, exceptId) {
+  const out = [...S.recs.values()].filter(r => r.id !== exceptId && (r.fault_place || r.fault_geo) && cabKey(r.site, r.cabinet) === key);
+  return out.sort((a, b) => (parseDate(b.entry_date) || 0) - (parseDate(a.entry_date) || 0));
+}
+function placeRefresh() {
+  if (!S.card || !$('#f-cabinet')) return;
+  const {key} = cabNow(), cp = cabPoint(), off = S.cabOk === false || MISSING.has('fault_geo');
+  const cw = $('#cabwaze'), cpb = $('#cabpin');
+  if (cw) { cw.disabled = !cp; cw.classList.toggle('off', !cp); }
+  if (cpb) { cpb.disabled = !key || S.cabOk === false; cpb.textContent = cp ? '📍 שנה מיקום' : '📍 מיקום הארונית'; }
+  const h = $('#cabhint'), past = key ? pastFaults(key, S.card.id) : [];
+  if (h) {
+    if (!past.length) { h.classList.add('hidden'); h.innerHTML = ''; }
+    else {
+      const r = past[0], p = parseGeo(r.fault_geo);
+      h.innerHTML = `⚠ בארונית הזו בעבר: <b>${esc(r.fault_place || 'מקום התקלה שמור')}</b> · ${esc((r.entry_date || '').slice(0, 10))} · טיקט <bdi dir="ltr">${esc(r.fdt)}</bdi>${past.length > 1 ? ` (+${past.length - 1})` : ''}`
+        + (p ? `<button class="wazebtn" id="hintwaze" type="button">Waze</button>` : '');
+      h.classList.remove('hidden');
+      const hw = $('#hintwaze'); if (hw) hw.onclick = e => { e.preventDefault(); window.open(wazeLL(p), '_blank'); };
+    }
+  }
+  const g = inputOf('fault_geo'), fp = parseGeo(g ? g.value : '');
+  ['#fwaze', '#fmaps'].forEach(id => { const b = $(id); if (b) { b.disabled = !fp; b.classList.toggle('off', !fp); } });
+  const line = $('#fgeo'); if (line) line.innerHTML = fp ? `📍 <bdi dir="ltr">${fp[0].toFixed(5)}, ${fp[1].toFixed(5)}</bdi>` : '';
+  if (off) { const f = $('#f-fault_place'); if (f && MISSING.has('fault_geo')) f.classList.add('hidden'); if (cpb && S.cabOk === false) cpb.classList.add('hidden'); }
+}
+function placeHook() {
+  if (!$('#f-cabinet')) return;
+  let timer = null, asked = '';
+  const kick = () => { placeRefresh(); clearTimeout(timer); timer = setTimeout(async () => {       // the newest place of this cabinet
+    const {key} = cabNow(); if (!key || key === asked || S.cabOk === false || S.readonly) return; asked = key;
+    try { const r = await S.cloud.getCab(key); S.cabs = S.cabs || new Map(); if (r && r.geo) S.cabs.set(key, r); else S.cabs.delete(key); S.cabOk = true; placeRefresh(); } catch {}
+  }, 400); };
+  ['site', 'cabinet'].forEach(c => inputOf(c) && inputOf(c).addEventListener('input', kick));
+  const stop = e => { e.preventDefault(); e.stopPropagation(); };
+  const cw = $('#cabwaze'); if (cw) cw.onclick = e => { stop(e); const p = cabPoint(); if (p) window.open(wazeLL(p), '_blank'); else toast('אין עדיין מיקום שמור לארונית — 📍 לשמירה'); };
+  const cpb = $('#cabpin'); if (cpb) cpb.onclick = e => { stop(e); pinCabinet(); };
+  const fw = $('#fwaze'); if (fw) fw.onclick = e => { stop(e); const p = parseGeo(inputOf('fault_geo').value); if (p) window.open(wazeLL(p), '_blank'); };
+  const fm = $('#fmaps'); if (fm) fm.onclick = e => { stop(e); const p = parseGeo(inputOf('fault_geo').value); if (p) window.open(gmapsLL(p), '_blank'); };
+  const fp = $('#fpin'); if (fp) fp.onclick = e => { stop(e); pinFault(); };
+  kick();
+}
+function myPlace() {                    // GPS of the phone → [lat, lng, accuracy m]
+  return new Promise((ok, bad) => {
+    if (!navigator.geolocation) return bad(new Error('אין GPS בדפדפן הזה'));
+    navigator.geolocation.getCurrentPosition(p => ok([r6(p.coords.latitude), r6(p.coords.longitude), Math.round(p.coords.accuracy || 0)]),
+      e => bad(new Error(e.code === 1 ? 'אין הרשאה למיקום — אפשר בהגדרות הדפדפן / האתר' : 'המיקום לא התקבל — נסה שוב בחוץ')),
+      {enableHighAccuracy: true, timeout: 20000, maximumAge: 0});
+  });
+}
+function placeSheet(title, cur, note) {  // → {geo, link} / {deleted: true} / null
+  return new Promise(resolve => {
+    const p0 = parseGeo(cur || '');
+    sheet(`<h3>📍 ${esc(title)}</h3>
+      <button class="btn gps" id="pgps">📍 המיקום שלי עכשיו (GPS)</button>
+      <div class="hint">או הדבק קישור מ-WhatsApp / Google Maps / Waze, או קואורדינטות:</div>
+      <input id="plink" class="ltr" placeholder="https://… או 32.18415, 34.87102" value="${esc(p0 ? geoText(p0) : '')}" autocomplete="off">
+      <div class="geoline" id="pstat"></div>
+      ${note ? `<div class="hint">${esc(note)}</div>` : ''}
+      <div class="btns"><button class="btn save" id="pok" disabled>שמור</button><button class="btn" id="ptest" disabled>Waze לבדיקה</button>
+      ${p0 ? '<button class="btn red" id="pdel">מחק</button>' : ''}<button class="btn" id="pno">ביטול</button></div>`);
+    let point = p0;
+    const stat = (t, bad) => { const el = $('#pstat'); el.textContent = t; el.classList.toggle('bad', !!bad); $('#pok').disabled = !point; $('#ptest').disabled = !point; };
+    const parse = () => { const t = $('#plink').value.trim(); point = parseGeo(t);
+      if (point || !t) stat(point ? `✓ ${point[0].toFixed(5)}, ${point[1].toFixed(5)}` : '');
+      else stat(isShortLink(t) ? 'קישור מקוצר — אי אפשר לקרוא ממנו נקודה בטלפון. השתמש ב«המיקום שלי» (או שמור מהמחשב).' : 'לא נמצא מיקום בטקסט הזה', true); };
+    $('#plink').addEventListener('input', parse);
+    parse();
+    const done = v => { closeSheet.cb = null; closeSheet(); resolve(v); };
+    closeSheet.cb = () => resolve(null);
+    $('#pgps').onclick = async () => { stat('מאתר מיקום…'); try { const g = await myPlace(); point = [g[0], g[1]]; $('#plink').value = geoText(point);
+      stat(`✓ ${point[0].toFixed(5)}, ${point[1].toFixed(5)}` + (g[2] ? ` · דיוק ±${g[2]} מ׳` : '')); } catch (e) { point = null; stat(e.message, true); } };
+    $('#ptest').onclick = () => point && window.open(wazeLL(point), '_blank');
+    $('#pok').onclick = () => { const t = $('#plink').value.trim(); done({geo: geoText(point), link: /^https?:\/\//i.test(t) ? t : ''}); };
+    if ($('#pdel')) $('#pdel').onclick = () => done({deleted: true});
+    $('#pno').onclick = () => done(null);
+  });
+}
+async function pinCabinet() {
+  const {key, site, cab} = cabNow();
+  if (!key) return toast('מלא «ארונית» (ו«מתחם»)');
+  const cur = S.cabs && S.cabs.get(key);
+  const r = await placeSheet(`מיקום הארונית · ${site ? site + ' / ' : ''}${cab}`, cur ? cur.geo : '', 'נשמר מיד לכולם — גם במחשב. בפעם הבאה Waze ייקח ישר לארונית.');
+  if (!r) return;
+  try {
+    S.cabs = S.cabs || new Map();
+    if (r.deleted) { await S.cloud.deleteCab(key); S.cabs.delete(key); toast('מיקום הארונית נמחק'); }
+    else { const row = await S.cloud.saveCab({key, site, cabinet: cab, geo: r.geo, link: r.link}); S.cabs.set(key, row); toast('מיקום הארונית נשמר לכולם'); }
+    S.cabOk = true;
+  } catch (e) { if (e instanceof AuthError) return sessionEnded(); info('לא נשמר', errText(e)); }
+  placeRefresh();
+}
+async function pinFault() {
+  const g = inputOf('fault_geo'); if (!g) return;
+  const r = await placeSheet('מקום התקלה' + (S.card.rec ? ' · טיקט ' + S.card.rec.fdt : ''), g.value, 'נשמר עם הטיקט — בלחיצה על «שמור».');
+  if (!r) return;
+  g.value = r.deleted ? '' : r.geo;
+  onEdit('fault_geo');
+  placeRefresh();
 }
 
 // ───────────── WhatsApp / history / settings ─────────────
