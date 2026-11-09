@@ -235,3 +235,9 @@ body.noscroll{overflow:hidden}
 .xrow input{flex:1;border:1px solid var(--line);border-radius:10px;padding:8px;font-size:15px}
 .xrow .btn{flex:0 0 auto;padding:6px 10px}
 .sheet .rembtn{margin:2px 0 8px}
+/* 1.57: a reminder without a date and time; «דחה ▾» + «📅 תאריך ושעה…» */
+.rnt{display:flex;gap:8px;align-items:center;margin:4px 0 6px;color:#5b2ea6;font-weight:600}
+#rwhen.off{opacity:.35;pointer-events:none}
+.snz{margin-top:6px}
+.snz select{flex:1;border:1px solid var(--line);border-radius:10px;padding:8px;font-size:15px;background:#fff}
+.rwhen{margin-top:6px}
