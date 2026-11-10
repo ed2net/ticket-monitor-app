@@ -1,14 +1,14 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.58';
+const APP_VERSION = 'mobile 1.59';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
 // ───────────── schema (same order and names as the desktop program) ─────────────
 const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'], ['sent_by', 'נשלח ע"י'], ['sent_group', 'נשלח בקבוצה'],
   ['city', 'עיר'], ['site', 'מתחם'], ['street', 'רחוב'], ['house', 'בית'], ['entrance', 'כניסה'], ['cabinet', 'ארונית'],
-  ['work_type', 'סוג העבודה'], ['contractor', 'קבלן מבצע'], ['escalation_date', 'תאריך הקפצה'], ['fault', 'זיהוי תקלה'],
+  ['work_type', 'סוג העבודה'], ['contractor', 'קבלן מבצע'], ['escalation_date', 'תאריך הקפצה'], ['fault', 'זיהוי תקלה'], ['bezeq_order', "מס' הזמנה בזק"],   // 1.59 / 11.28 (SQL 27)
   ['close_type', 'סוג סגירת התקלה'], ['status', 'סטטוס'], ['infrastructure', 'קוד תקלה'], ['inspector', 'מפקח'], ['close_date', 'תאריך סגירה'],
   ['solution', 'פתרון'], ['notes', 'הערות']];
 const COLS = F.map(x => x[0]);
@@ -50,7 +50,7 @@ function fiberCode(fault, solution) {   // the קרע סיב cable decides the c
 }
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
-const NEW_COLS = new Set(['inspector', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before']);      // added later (SQL 06 / 24): the app still works without them
+const NEW_COLS = new Set(['inspector', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before', 'bezeq_order']);      // added later (SQL 06 / 24): the app still works without them
 const MISSING = new Set();
 const META = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'];
 const sel = () => META.concat(DB_COLS.filter(c => !MISSING.has(c))).join(',');
@@ -967,7 +967,7 @@ function openCard(id, prefill) {
   guard();
 }
 // 1.44 / 10.75: a technician (role 'tech') sees only his tickets and changes only the closing fields
-const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before']);   // 1.52: + the place of the fault
+const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before', 'bezeq_order']);   // 1.52: + the place of the fault; 1.59: + מס' הזמנה בזק
 const isTech = () => S.role === 'tech';
 const canEdit = c => !S.readonly && !MISSING.has(c) && (!isTech() || TECH_EDIT.has(c));
 function fieldHtml(c) {
