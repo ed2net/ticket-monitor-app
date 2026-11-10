@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.57';
+const APP_VERSION = 'mobile 1.58';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -747,6 +747,7 @@ async function loadWaSetting() {  // WhatsApp fields without V — chosen by the
   if (Array.isArray(v)) S.waOff = v;
   try { const r = await S.cloud.loadSetting('req_fields'); if (Array.isArray(r)) S.req = r; } catch {}   // 1.29
   try { const g = await S.cloud.loadSetting('close_groups'); S.closeGroups = Array.isArray(g) ? g : []; } catch {}   // 1.46
+  try { const g = await S.cloud.loadSetting('group_links'); S.groupLinks = Array.isArray(g) ? g : []; } catch {}      // 1.58
   try { const m = await S.cloud.loadSetting('maps_index'); if (Array.isArray(m)) S.maps = m; } catch {}   // 1.39
 }
 // 1.29 / 10.49: required fields — empty ones are coloured: green = needed when opening, orange = needed to close
@@ -1895,6 +1896,17 @@ function closeTargets(group) {
   }
   return out;
 }
+// 1.58 / 11.27: the invite link of a group (⚙ «קבוצות» on the computer) — the group opens itself
+const GROUP_LINK_RX = /https?:\/\/chat\.whatsapp\.com\/(?:invite\/)?[A-Za-z0-9_-]{10,}/i;
+function groupLinkOf(group) {
+  const k = groupKey(group); if (!k) return '';
+  for (const x of S.groupLinks || []) {
+    const i = String(x).indexOf('|'); if (i < 0) continue;
+    const m = String(x).slice(i + 1).match(GROUP_LINK_RX);
+    if (m && groupKey(String(x).slice(0, i)) === k) return m[0].replace(/^http:/i, 'https:');
+  }
+  return '';
+}
 const groupTitle = g => String(g || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 async function whatsapp(msgIn, head, groupIn) {
   if (!S.readonly) { try { await loadWaSetting(); saveCache(); } catch {} }   // newest choice of the admin
@@ -1903,10 +1915,18 @@ async function whatsapp(msgIn, head, groupIn) {
   let files = [];
   const s = sheet(`<h3>${esc(head || 'הודעה ל-WhatsApp')}</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
     <div class="photos"><label class="btn photo">📷 הוסף תמונות<input type="file" id="waphotos" accept="image/*" multiple hidden></label><div class="thumbs" id="thumbs"></div></div>
-    ${targets.length ? `<div class="targets">${targets.map((g, i) => `<button class="btn wa tgt" data-t="${i}">שלח לקבוצה: ${esc(groupTitle(g))}</button>`).join('')}
-      <p class="hint">שם הקבוצה מועתק — ב-WhatsApp אפשר להדביק אותו בחיפוש.${targets.length > 1 ? ' יש לשלוח לכל הקבוצות.' : ''}</p></div>` : ''}
+    ${targets.length ? `<div class="targets">${targets.map((g, i) => `<button class="btn wa tgt" data-t="${i}">שלח לקבוצה: ${esc(groupTitle(g))}${groupLinkOf(g) ? ' 🔗' : ''}</button>`).join('')}
+      <p class="hint">${targets.some(groupLinkOf) ? '🔗 — הקבוצה נפתחת בעצמה, ההודעה מועתקת: לחץ בשדה ההודעה ← הדבק ← שלח. ' : ''}${targets.some(g => !groupLinkOf(g)) ? 'בלי 🔗 — שם הקבוצה מועתק, ב-WhatsApp אפשר להדביק אותו בחיפוש.' : ''}${targets.length > 1 ? ' יש לשלוח לכל הקבוצות.' : ''}</p></div>` : ''}
     <div class="btns"><button class="btn wa" id="wasend">${targets.length ? 'שלח (בחירה)' : 'שלח'}</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
   const sendTo = async (t, group) => {      // files → share sheet of the phone; text only → WhatsApp contact picker
+    const link = group && !files.length ? groupLinkOf(group) : '';
+    if (link) {                               // 1.58: the group opens by its link, the message waits on the clipboard
+      let copied = true;
+      try { await navigator.clipboard.writeText(t); } catch { copied = false; }
+      window.open(link, '_blank');
+      toast(copied ? 'ההודעה הועתקה — בקבוצה: הדבק ← שלח' : 'הקבוצה נפתחת — העתק את ההודעה ידנית', 5000);
+      return true;
+    }
     if (group) { try { navigator.clipboard.writeText(groupTitle(group)).catch(() => {}); } catch {} }
     if (files.length) {
       if (canShareFiles(files)) {
