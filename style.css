@@ -241,3 +241,5 @@ body.noscroll{overflow:hidden}
 .snz{margin-top:6px}
 .snz select{flex:1;border:1px solid var(--line);border-radius:10px;padding:8px;font-size:15px;background:#fff}
 .rwhen{margin-top:6px}
+/* 1.60: «סגורים היום» */
+.chip.c-closed{color:#1d6b3a;border-color:#1d6b3a;background:#fff}.chip.on.c-closed{background:#1d6b3a;border-color:#1d6b3a;color:#fff}

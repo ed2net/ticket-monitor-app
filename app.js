@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.59';
+const APP_VERSION = 'mobile 1.60';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -141,7 +141,8 @@ const wazeLL = p => `https://waze.com/ul?ll=${p[0].toFixed(6)},${p[1].toFixed(6)
 const gmapsLL = p => `https://www.google.com/maps/search/?api=1&query=${p[0].toFixed(6)},${p[1].toFixed(6)}`;
 const cabKey = (site, cab) => { const n = v => String(v || '').replace(/\s+/g, '').toLowerCase(); return n(cab) ? `${n(site)}|${n(cab)}` : ''; };
 // 1.14: status groups and filter buttons — same colours as the computer (10.20)
-const CHIPS = [['all', 'הכל'], ['finish', 'FINISH'], ['wait', 'בהמתנה'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום'], ['late', 'באיחור'], ['other', 'אחר']];   // 1.34: «באיחור» · 1.49: «אחר» = no / non-standard status
+// 1.60 / 11.29: no «הכל» / «בהמתנה» / «באיחור» / «אחר»; + «סגורים היום»; a second tap on the lit button = all
+const CHIPS = [['finish', 'FINISH'], ['work', 'בעבודה'], ['cont', 'המשך טיפול'], ['today', 'נפתחו היום'], ['closed', 'סגורים היום']];   // 1.34: «באיחור» · 1.49: «אחר» = no / non-standard status
 function savedChip() { try { const c = localStorage.getItem('tm_chip'); return CHIPS.some(x => x[0] === c) ? c : 'all'; } catch { return 'all'; } }
 function stClass(r) {
   const s = (r.status || '').toLowerCase();
@@ -893,7 +894,7 @@ function renderList() {
   $('#set').onclick = settings;
   if ($('#ppl')) $('#ppl').onclick = () => renderPeople();
   $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
-  document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = b.dataset.chip; S.limit = 60; try { localStorage.setItem('tm_chip', S.chip); } catch {} renderList(); });
+  document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = S.chip === b.dataset.chip ? 'all' : b.dataset.chip; S.limit = 60; try { localStorage.setItem('tm_chip', S.chip); } catch {} renderList(); });
   if ($('#new')) $('#new').onclick = () => openCard(null);
   if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(() => kv.get('cache')).then(c => usableCache(c) ? quickStart(c) : enterOnline()).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('')); } else renderLogin(''); };
   renderListBody();
@@ -915,14 +916,18 @@ function filtered() {
   let rows = [...S.recs.values()];
   const words = S.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) rows = rows.filter(r => words.every(w => r._s.includes(w)));
-  const isToday = r => stClass(r) !== 'finish' && (r.entry_date || '').startsWith(today);   // 1.33: a closed ticket leaves «נפתחו היום»
-  const n = {all: rows.length, finish: 0, wait: 0, work: 0, cont: 0, other: 0, today: 0, late: 0};      // numbers on the buttons
-  for (const r of rows) { n[stClass(r)]++; if (isToday(r)) n.today++; if (isLate(r)) n.late++; }
+  const isToday = r => (r.entry_date || '').startsWith(today);                     // 1.60: the closed ones too (at the bottom)
+  const isClosed = r => stClass(r) === 'finish' && (r.close_date || '').startsWith(today);   // 1.60: closed today, opened whenever
+  const n = {all: rows.length, finish: 0, wait: 0, work: 0, cont: 0, other: 0, today: 0, closed: 0, late: 0};      // numbers on the buttons
+  for (const r of rows) { n[stClass(r)]++; if (isToday(r)) n.today++; if (isClosed(r)) n.closed++; if (isLate(r)) n.late++; }
   S.chipCounts = n;
   if (S.chip === 'today') rows = rows.filter(isToday);
+  else if (S.chip === 'closed') rows = rows.filter(isClosed);
   else if (S.chip === 'late') rows = rows.filter(isLate);
   else if (S.chip !== 'all') rows = rows.filter(r => stClass(r) === S.chip);
-  return rows.sort((a, b) => b.id - a.id);
+  rows.sort((a, b) => b.id - a.id);
+  if (S.chip === 'today') rows.sort((a, b) => (stClass(a) === 'finish') - (stClass(b) === 'finish'));   // stable: open first
+  return rows;
 }
 function renderListBody() {
   const list = $('#list'); if (!list) return;
