@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.60';
+const APP_VERSION = 'mobile 1.61';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1583,6 +1583,24 @@ function mapsIndex() {
   }
   return mapsIndex.c;
 }
+// 1.61 / 11.39: the essence of a site name — «GH-HRZL0138_V2», «HRZL0138_V2», «hrzl138 v2» → HRZL138|V2
+function siteCore(name) {
+  let s = String(name || '').trim().toUpperCase(), t;
+  while ((t = s.replace(/^[A-Z]{1,5}-(?=[A-Z])/, '')) !== s) s = t;
+  const m = s.match(/^([A-Z]{2,})0*(\d+)/);
+  if (!m) return ['', ''];
+  const v = s.slice(m[0].length).match(/[\s_-]V0*(\d+)(?![\dA-Z])/);
+  return [m[1] + String(+m[2]), v ? 'V' + (+v[1]) : ''];
+}
+function siteFoldersCore(site, city, anyVer = true) {
+  const m = mapsIndex(), [code, ver] = siteCore(site);
+  if (!m || !code) return [];
+  const same = [], other = [], c = mapName(city);
+  for (const [name, ps] of m.idx) { const [c2, v2] = siteCore(name); if (c2 === code) (v2 === ver ? same : other).push(...ps); }
+  const parent = p => { const a = p.split('/'); return a.length > 1 ? a[a.length - 2] : ''; };
+  const inCity = p => !!c && mapName(parent(p)) === c;
+  return (same.length ? same : anyVer ? other : []).sort((a, b) => (inCity(a) ? 0 : 1) - (inCity(b) ? 0 : 1) || (a < b ? -1 : a > b ? 1 : 0));
+}
 function siteFolders(site, city) {
   const m = mapsIndex();
   site = String(site || '').trim(); city = String(city || '').trim();
@@ -1599,9 +1617,12 @@ function siteFolders(site, city) {
   if (exact.size && ![...loose].some(inCity)) hits = exact;   // a «code + text» folder counts only in the own city
   const out = [...hits].sort((a, b) => (inCity(a) ? 0 : 1) - (inCity(b) ? 0 : 1) || (exact.has(a) ? 0 : 1) - (exact.has(b) ? 0 : 1)
                                     || (a < b ? -1 : a > b ? 1 : 0));
+  if (out.length) return out;
+  const core = siteFoldersCore(site, city, false);             // 1.61: with or without GH- / GB-, 0138 = 138 (the same version)
+  if (core.length) return core;
   const base = site.replace(MAP_VER, '');
-  if (!out.length && base && base !== site) return siteFolders(base, city);   // «GB-NATN016-V2» → «GB-NATN016»
-  return out;
+  if (base && base !== site) { const b = siteFolders(base, city); if (b.length) return b; }   // «GB-NATN016-V2» → «GB-NATN016»
+  return siteFoldersCore(site, city);
 }
 function folderUrl(rel) {
   const m = mapsIndex(), u = new URL(m.lib), lib = u.pathname.replace(/\/+$/, '');
