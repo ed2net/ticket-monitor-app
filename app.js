@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.62';
+const APP_VERSION = 'mobile 1.63';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -850,7 +850,32 @@ function presenceMeta() {
   const c = S.card;
   return {user_id: S.cloud.user.id || '', name: myName(), conn: S.conn, ticket_id: c && c.id != null ? c.id : null,
     fdt: c && c.rec ? c.rec.fdt : '', editing: !!(c && c.dirty), new_ticket: !!(c && c.id == null), app: APP_VERSION,
-    since: new Date().toISOString()};
+    draft_fdt: draftFdt(), since: new Date().toISOString()};
+}
+// 1.63 / 11.42: two people fill a NEW ticket with the same number at the same time → both get a message
+const normFdt = v => String(v || '').replace(/\s+/g, '').toLowerCase();
+function draftFdt() {
+  const c = S.card; if (!c || c.id != null) return '';
+  const el = inputOf('fdt'); return normFdt(el ? el.value : '');
+}
+function draftDups() {
+  const f = draftFdt(); if (!f) return [];
+  const names = [];
+  for (const c of S.connections) {
+    if (c.conn === S.conn || !c.new_ticket || normFdt(c.draft_fdt) !== f) continue;
+    const n = c.name || userName(c.user_id); if (!names.includes(n)) names.push(n);
+  }
+  return names;
+}
+function renderDupBar() {
+  const el = $('#dupnew'); if (!el || !S.card || S.card.id != null) return;
+  const who = draftDups(), f = draftFdt();
+  if (!who.length) { setBanner(el, ''); return; }
+  const w = who.join(', ');
+  setBanner(el, `<div class="banner warn">⚠ ${esc(w)} פותח/ת עכשיו טיקט חדש עם אותו מס' טיקט (${esc(f)}) — תאמו מי ממשיך, כדי שלא יהיו שני טיקטים.</div>`);
+  const key = f + '|' + w;
+  S.card.dupWarned = S.card.dupWarned || new Set();
+  if (!S.card.dupWarned.has(key)) { S.card.dupWarned.add(key); if (!sheetOpen()) info('טיקט כפול', `${w} פותח/ת עכשיו טיקט חדש עם אותו מס' טיקט: ${f}. תאמו ביניכם מי ממשיך — אחרת ייווצרו שני טיקטים.`); }
 }
 function track() { if (S.rt) S.rt.track(presenceMeta()); }
 function others() { const me = S.cloud.user.id; return S.connections.filter(c => c.conn !== S.conn && c.user_id !== me); }
@@ -876,7 +901,7 @@ function pillHtml() {
 function refreshLive() {
   const p = $('#pill'); if (p) p.innerHTML = pillHtml();
   if (S.view === 'list') renderListBody();
-  if (S.view === 'card') renderOthersBar();
+  if (S.view === 'card') { renderOthersBar(); renderDupBar(); }
 }
 
 // ───────────── list ─────────────
@@ -1071,7 +1096,7 @@ function renderCard() {
 
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew || isTech() ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
-    <div id="others"></div><div id="remote"></div><div id="rembox"></div>
+    <div id="others"></div><div id="dupnew"></div><div id="remote"></div><div id="rembox"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
       <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all the fields, same order as the table / desktop card (+ מקום התקלה) -->
@@ -1145,7 +1170,10 @@ function onEdit(col) {
     if (isTech() && want && want !== 'FINISH') want = null;      // 1.44: a technician only closes
     if (want && want !== norm(st.value)) { st.value = want; toast('סטטוס: ' + want); }
   }
-  if (col === 'fdt') { const el = inputOf('fdt'); el.classList.toggle('bad', isDupFdt(el.value)); }
+  if (col === 'fdt') {
+    const el = inputOf('fdt'); el.classList.toggle('bad', isDupFdt(el.value));
+    if (c.id == null) { clearTimeout(c.draftT); c.draftT = setTimeout(() => { if (S.card === c) { track(); renderDupBar(); } }, 600); }   // 1.63
+  }
   updateSave();
   const dirty = changedCols(values()).length > 0;
   if (dirty !== c.dirty) { c.dirty = dirty; track(); renderOthersBar(); }
