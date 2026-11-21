@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.61';
+const APP_VERSION = 'mobile 1.62';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -884,7 +884,7 @@ function renderList() {
   S.view = 'list'; S.card = null; track(); unguard();
   if ($('#pickbar') && !S.pick) $('#pickbar').remove();
   app().innerHTML = `<div class="screen">
-    <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><div class="topbtns">${isTech() ? '' : '<button class="icon" id="ppl" title="עובדים">👥</button>'}<button class="icon" id="set">⚙</button></div></div><div id="pill">${pillHtml()}</div></div>
+    <div class="top"><div class="toprow"><div class="title"><span>Ticket Monitor</span></div><div class="topbtns"><button class="icon" id="duty" title="מי כונן היום">🛡</button>${isTech() ? '' : '<button class="icon" id="ppl" title="עובדים">👥</button>'}<button class="icon" id="set">⚙</button></div></div><div id="pill">${pillHtml()}</div></div>
     ${S.readonly ? `<div class="banner grey">הנתונים מ-<bdi dir="ltr">${esc(S.cacheAt)}</bdi>. אפשר לחפש, לפתוח טיקט, להעתיק ולשלוח ב-WhatsApp. שמירה — כשתחזור הרשת.<br><button id="retry">התחבר שוב</button></div>` : ''}
     <input id="q" class="search" type="search" placeholder="🔍  חיפוש: מספר, עיר, רחוב, ארונית…" value="${esc(S.query)}">
     <div class="chips">${CHIPS.map(([k, t]) =>
@@ -892,6 +892,7 @@ function renderList() {
     <div class="count" id="count"></div><div class="list" id="list"></div>
     ${S.readonly || isTech() ? '' : '<button class="fab" id="new">+</button>'}</div>`;
   $('#set').onclick = settings;
+  $('#duty').onclick = todayDutySheet;              // 1.62
   if ($('#ppl')) $('#ppl').onclick = () => renderPeople();
   $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
   document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = S.chip === b.dataset.chip ? 'all' : b.dataset.chip; S.limit = 60; try { localStorage.setItem('tm_chip', S.chip); } catch {} renderList(); });
@@ -1687,6 +1688,55 @@ async function contactSheet(name, label = 'קבלן מבצע') {
   if (!p) { toast(`אין פרטי קשר ל-«${name}». המנהל מוסיף אותם ב«עובדים» בתוכנית במחשב.`, 4500); return; }
   if (!S.readonly) { try { await loadWaSetting(); } catch {} }
   personSheet(p, S.card ? message(values()) : '');       // 1.43: «שלח את הטיקט ל…» — straight to this person
+}
+// ───────────── 1.62 / 11.41: «מי כונן היום» — the date of the duty (07:00 – 07:00) and everybody on duty that day ─────────────
+const DUTY_CHANGE_HOUR = 7;                       // before 07:00 it is still yesterday's duty
+const HE_DAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+function dutyDayNow() { const d = new Date(Date.now() - DUTY_CHANGE_HOUR * 3600e3); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function dutyName(p) { const n = personName(p); return n !== '—' ? n : (norm(p.contractor) || '—'); }
+async function todayDutyData() {
+  try {
+    const r = await S.cloud.rpc('duty_today');                     // SQL 28: for everybody, a technician too
+    if (r && typeof r === 'object' && !Array.isArray(r)) return r;
+  } catch (e) {
+    if (e instanceof OfflineError || e instanceof AuthError) throw e;
+    if (!(e.status === 404 || e.code === 'PGRST202' || e.code === '42883')) throw e;
+  }
+  if (isTech()) return {missing: true};                            // a technician reads «עובדים» only through SQL 28
+  const day = dutyDayNow();
+  const slots = await S.cloud.fetchAll('duty_slots', `select=day,slot,person_id,note&day=eq.${day}&order=slot`);
+  const sp = await S.cloud.fetchAll('duty_special', `select=day,kind,name&day=eq.${day}`).catch(() => []);
+  if (!S.people) await loadPeople();
+  const by = new Map((S.people || []).map(p => [+p.id, p]));
+  return {day, special: sp[0] || null, people: slots.filter(x => x.person_id).map(x => ({...(by.get(+x.person_id) || {}), slot: x.slot, note: x.note}))};
+}
+function dutyTitle(iso, special) {
+  const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number), dt = new Date(y, m - 1, d), nx = new Date(y, m - 1, d + 1);
+  const sp = special && (special.name || special.kind) ? ` · ${special.name || special.kind}` : '';
+  return [`יום ${HE_DAYS[dt.getDay()]} ${pad(d)}/${pad(m)}/${y}${sp}`,
+          `כוננות משעה ${pad(DUTY_CHANGE_HOUR)}:00 עד ${pad(DUTY_CHANGE_HOUR)}:00 ביום ${pad(nx.getDate())}/${pad(nx.getMonth() + 1)}`];
+}
+async function todayDutySheet() {
+  if (S.readonly) { toast('אין חיבור — «מי כונן היום» זמין רק כשמחוברים'); return; }
+  const [t0, h0] = dutyTitle(dutyDayNow());
+  const s = sheet(`<h3>מי כונן היום</h3><div class="dutyday" id="dday">${esc(t0)}</div><div class="dutyhours" id="dhours">${esc(h0)}</div>
+    <div id="dlist"><div class="loading">טוען…</div></div><div class="btns"><button class="btn" id="dclose">סגור</button></div>`);
+  s.querySelector('#dclose').onclick = closeSheet;
+  let d;
+  try { d = await todayDutyData(); }
+  catch (e) {
+    if (e instanceof AuthError) { closeSheet(); sessionEnded(); return; }
+    if ($('#dlist')) $('#dlist').innerHTML = `<div class="loading">${e instanceof OfflineError ? 'אין חיבור לשרת' : 'לא נטען: ' + esc(e.message || e)}</div>`;
+    return;
+  }
+  if (!$('#dlist')) return;                                         // closed meanwhile
+  if (d.missing) { $('#dlist').innerHTML = '<div class="loading">המנהל צריך להריץ פעם אחת את 28_duty_today.sql בשרת.</div>'; return; }
+  const [t, h] = dutyTitle(d.day, d.special);
+  $('#dday').textContent = t; $('#dhours').textContent = h;
+  const ps = [...(d.people || [])].sort((a, b) => (+a.slot || 0) - (+b.slot || 0));
+  $('#dlist').innerHTML = ps.map(p => `<div class="person duty"><div class="pmain"><b>${esc(dutyName(p))}</b>
+      ${p.phone ? `<span dir="ltr" class="ph">${esc(p.phone)}</span>` : ''}${norm(p.note) ? `<span class="dnote">${esc(p.note)}</span>` : ''}</div>
+      <div class="clinks">${contactLinks({phone: p.phone})}</div></div>`).join('') || '<div class="loading">אין כוננים בלוח ליום הזה.</div>';
 }
 function renderPeople() {
   S.view = 'people'; S.card = null; S.pick = null; track(); guard();

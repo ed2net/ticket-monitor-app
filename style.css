@@ -243,3 +243,8 @@ body.noscroll{overflow:hidden}
 .rwhen{margin-top:6px}
 /* 1.60: «סגורים היום» */
 .chip.c-closed{color:#1d6b3a;border-color:#1d6b3a;background:#fff}.chip.on.c-closed{background:#1d6b3a;border-color:#1d6b3a;color:#fff}
+/* 1.62: «מי כונן היום» */
+.dutyday{font-size:17px;font-weight:700;color:#263445}
+.dutyhours{color:#6b7785;font-size:13px;margin-bottom:10px}
+.person.duty{background:#f4f6f8;box-shadow:none;border:1px solid #dde3e9}
+.dnote{color:#8a6d1a!important}
