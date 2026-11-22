@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.63';
+const APP_VERSION = 'mobile 1.64';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1748,7 +1748,7 @@ async function todayDutySheet() {
   if (S.readonly) { toast('אין חיבור — «מי כונן היום» זמין רק כשמחוברים'); return; }
   const [t0, h0] = dutyTitle(dutyDayNow());
   const s = sheet(`<h3>מי כונן היום</h3><div class="dutyday" id="dday">${esc(t0)}</div><div class="dutyhours" id="dhours">${esc(h0)}</div>
-    <div id="dlist"><div class="loading">טוען…</div></div><div class="btns"><button class="btn" id="dclose">סגור</button></div>`);
+    <div id="dlist"><div class="loading">טוען…</div></div><div class="btns"><button class="btn wa" id="dshare" disabled>📷 שלח צילום</button><button class="btn" id="dclose">סגור</button></div>`);
   s.querySelector('#dclose').onclick = closeSheet;
   let d;
   try { d = await todayDutyData(); }
@@ -1765,6 +1765,39 @@ async function todayDutySheet() {
   $('#dlist').innerHTML = ps.map(p => `<div class="person duty"><div class="pmain"><b>${esc(dutyName(p))}</b>
       ${p.phone ? `<span dir="ltr" class="ph">${esc(p.phone)}</span>` : ''}${norm(p.note) ? `<span class="dnote">${esc(p.note)}</span>` : ''}</div>
       <div class="clinks">${contactLinks({phone: p.phone})}</div></div>`).join('') || '<div class="loading">אין כוננים בלוח ליום הזה.</div>';
+  const sh = $('#dshare');                                          // 1.64 / 11.43: one picture to whoever you choose
+  if (sh && ps.length) { sh.disabled = false; sh.onclick = () => shareDutyPicture(t, h, ps); }
+}
+function dutyPicture(title, hours, ps) {
+  const W = 720, pad = 28, rowH = 92, cv = document.createElement('canvas');
+  const H = pad + 50 + 36 + ps.length * (rowH + 12) + pad;
+  cv.width = W * 2; cv.height = H * 2;
+  const g = cv.getContext('2d'); g.scale(2, 2); g.direction = 'rtl'; g.textAlign = 'right';
+  const font = (w, px) => `${w} ${px}px "Segoe UI", Arial, sans-serif`;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#263445'; g.font = font(700, 30); g.fillText(title, W - pad, pad + 32);
+  g.fillStyle = '#6b7785'; g.font = font(400, 20); g.fillText(hours, W - pad, pad + 72);
+  let y = pad + 96;
+  for (const p of ps) {
+    g.fillStyle = '#f4f6f8'; g.strokeStyle = '#dde3e9'; g.lineWidth = 1.5;
+    g.beginPath(); g.roundRect ? g.roundRect(pad, y, W - 2 * pad, rowH, 12) : g.rect(pad, y, W - 2 * pad, rowH); g.fill(); g.stroke();
+    g.fillStyle = '#263445'; g.font = font(700, 26); g.textAlign = 'right'; g.fillText(dutyName(p), W - pad - 18, y + 38);
+    if (p.phone) { g.font = font(400, 22); g.textAlign = 'left'; g.direction = 'ltr'; g.fillText(p.phone, pad + 18, y + 74); g.direction = 'rtl'; g.textAlign = 'right'; }
+    if (norm(p.note)) { g.fillStyle = '#8a6d1a'; g.font = font(400, 20); g.fillText(p.note, W - pad - 18, y + 74); }
+    y += rowH + 12;
+  }
+  return cv;
+}
+async function shareDutyPicture(title, hours, ps) {
+  const cv = dutyPicture(title, hours, ps);
+  const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+  const files = [new File([blob], 'konenut.png', {type: 'image/png'})];
+  if (canShareFiles(files)) {
+    try { await navigator.share({files}); return true; } catch (e) { if (e && e.name === 'AbortError') return false; }
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'konenut.png'; a.click();   // no share — download
+  toast('התמונה נשמרה — שלח אותה ב-WhatsApp');
+  return false;
 }
 function renderPeople() {
   S.view = 'people'; S.card = null; S.pick = null; track(); guard();
