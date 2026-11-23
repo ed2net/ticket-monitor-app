@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.64';
+const APP_VERSION = 'mobile 1.65';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -218,6 +218,39 @@ class Cloud {
     if (r.status === 401 && this.rt) { await this.refresh(); r = await this.raw(method, path, body, headers, this.at); }
     if (r.status >= 400) throw this.err(r.status, r.data);
     return r.data;
+  }
+  // 1.65 / 11.44: files (photos) — the body as bytes, the answer as bytes
+  async bin(method, path, body, headers = {}) {
+    await this.ensureFresh();
+    const go = async () => {
+      const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 60000);
+      try { return await fetch(this.url + path, {method, body, signal: ctl.signal, cache: 'no-store',
+        headers: {apikey: this.key, Authorization: 'Bearer ' + this.at, ...headers}}); }
+      catch (e) { throw new OfflineError('אין חיבור לשרת'); }
+      finally { clearTimeout(t); }
+    };
+    let r = await go();
+    if (r.status === 401 && this.rt) { await this.refresh(); r = await go(); }
+    if (r.status >= 400) { let d = null; try { d = await r.json(); } catch {} throw this.err(r.status === 400 && d && d.statusCode ? +d.statusCode || 400 : r.status, d); }
+    return r;
+  }
+  photos(tid) { return this.fetchAll('ticket_photos', `select=id,ticket_id,path,by_name,size,created_at&ticket_id=eq.${+tid}&order=id`); }
+  async addPhoto(tid, blob, by) {
+    const path = `${+tid}/${Math.random().toString(16).slice(2, 10)}${Date.now().toString(16).slice(-8)}.jpg`;
+    await this.bin('POST', `/storage/v1/object/ticket-photos/${path}`, blob, {'Content-Type': 'image/jpeg', 'x-upsert': 'false'});
+    try {
+      const rows = await this.req('POST', '/rest/v1/ticket_photos?select=id,ticket_id,path,by_name,size,created_at',
+        {ticket_id: +tid, path, by_name: by || '', size: blob.size || 0}, {Prefer: 'return=representation'});
+      return (rows || [])[0] || {ticket_id: +tid, path};
+    } catch (e) {
+      try { await this.bin('DELETE', '/storage/v1/object/ticket-photos', JSON.stringify({prefixes: [path]}), {'Content-Type': 'application/json'}); } catch {}
+      throw e;
+    }
+  }
+  async photoBlob(path) { return (await this.bin('GET', `/storage/v1/object/authenticated/ticket-photos/${path}`)).blob(); }
+  async deletePhoto(ph) {
+    await this.bin('DELETE', '/storage/v1/object/ticket-photos', JSON.stringify({prefixes: [ph.path]}), {'Content-Type': 'application/json'});
+    await this.req('DELETE', `/rest/v1/ticket_photos?id=eq.${+ph.id}`);
   }
   async fetchAll(table, q) {
     let out = [], start = 0;
@@ -1096,7 +1129,7 @@ function renderCard() {
 
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew || isTech() ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
-    <div id="others"></div><div id="dupnew"></div><div id="remote"></div><div id="rembox"></div>
+    <div id="others"></div><div id="dupnew"></div><div id="remote"></div><div id="rembox"></div><div id="photobox"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
       <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all the fields, same order as the table / desktop card (+ מקום התקלה) -->
@@ -1122,6 +1155,7 @@ function renderCard() {
   if ($('#gmapsbtn')) $('#gmapsbtn').onclick = e => { e.preventDefault(); e.stopPropagation(); openGmaps(); };
   placeHook();                                  // 1.52
   remBox();                                     // 1.54
+  photoBox();                                   // 1.65
   document.querySelectorAll('[data-pick]').forEach(p => {
     const col = p.dataset.pick;
     const prime = () => { const d = parseDate(inputOf(col).value) || new Date(); p.value = toIso(d).slice(0, DATE_ONLY.has(col) ? 10 : 16); };
@@ -1195,7 +1229,7 @@ async function closeByTech() {        // 1.44: required closing fields → תא�
   const id = S.card.id, msg = message(values()), group = values().sent_group;
   await save();
   const r = S.recs.get(id);
-  if (r && stClass(r) === 'finish' && S.view === 'list') whatsapp(msg, 'נסגר ✓ — שלח לקבוצה עם תמונות', group);   // 1.45 / 1.46
+  if (r && stClass(r) === 'finish' && S.view === 'list') whatsapp(msg, 'נסגר ✓ — שלח לקבוצה עם תמונות', group, id);   // 1.45 / 1.46
 }
 function updateSave() {
   markClosing();
@@ -1379,6 +1413,66 @@ async function remUpdate(id, changes) {       // straight to the server (not thr
   return false;
 }
 const remClear = () => ({remind_at: '', remind_text: '', remind_by: '', remind_before: ''});
+// ---------- 1.65 / 11.44: photos of the ticket (SQL 29) ----------
+const photoWhen = p => { const d = new Date(p && p.created_at); return isNaN(d) ? '' : `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+const PHOTO_URLS = new Map();          // path -> object URL (this session)
+async function photoUrl(path) {
+  if (!PHOTO_URLS.has(path)) PHOTO_URLS.set(path, URL.createObjectURL(await S.cloud.photoBlob(path)));
+  return PHOTO_URLS.get(path);
+}
+async function uploadPhotos(tid, files) {
+  const out = [];
+  for (const f of files) {
+    const small = f.type === 'image/jpeg' && f.size < 400000 ? f : await shrinkImage(f, 1600, 0.72);
+    out.push(await S.cloud.addPhoto(tid, small, myName()));
+  }
+  return out;
+}
+async function photoBox() {
+  const box = $('#photobox'); if (!box || !S.card) return;
+  const c = S.card;
+  if (c.id == null || S.readonly || S.photosOk === false) { box.innerHTML = ''; return; }
+  let rows;
+  try { rows = await S.cloud.photos(c.id); S.photosOk = true; }
+  catch (e) {
+    if (e instanceof CloudError && !(e instanceof OfflineError) && !(e instanceof AuthError) && (e.status === 404 || /ticket_photos|PGRST205|42P01/.test(e.message + e.code))) S.photosOk = false;
+    box.innerHTML = ''; return;
+  }
+  if (S.card !== c) return;
+  c.photos = rows;
+  box.innerHTML = `<div class="photobox"><div class="phead"><b>📷 תמונות${rows.length ? ` (${rows.length})` : ''}</b>
+      <label class="btn photo">＋ הוסף<input type="file" id="phadd" accept="image/*" multiple hidden></label></div>
+      <div class="pgrid">${rows.map((p, i) => `<button class="pth" data-i="${i}" type="button"><img alt="" data-path="${esc(p.path)}"></button>`).join('')}</div></div>`;
+  box.querySelectorAll('img[data-path]').forEach(async img => { try { img.src = await photoUrl(img.dataset.path); } catch {} });
+  box.querySelectorAll('.pth').forEach(b => b.onclick = e => { e.preventDefault(); photoView(c, +b.dataset.i); });
+  $('#phadd').onchange = async e => {
+    const add = [...(e.target.files || [])]; e.target.value = '';
+    if (!add.length) return;
+    toast(`מעלה ${add.length} תמונות…`);
+    try { await uploadPhotos(c.id, add); toast('התמונות נשמרו בטיקט'); }
+    catch (err) { info('תמונות', 'התמונות לא נשמרו: ' + (err.message || err) + (err instanceof OfflineError ? '\nנסה שוב כשיש חיבור.' : '')); }
+    photoBox();
+  };
+}
+function photoView(c, i) {
+  const rows = c.photos || []; if (!rows[i]) return;
+  const p = rows[i], office = !isTech() && !S.readonly;
+  const s = sheet(`<h3>תמונה ${i + 1} / ${rows.length}</h3><div class="pbig"><img id="pbig" alt=""></div>
+    <div class="hint">${esc(p.by_name || '')} · <bdi dir="ltr">${esc(photoWhen(p))}</bdi></div>
+    <div class="btns">${i > 0 ? '<button class="btn" id="pprev">▶</button>' : ''}${i < rows.length - 1 ? '<button class="btn" id="pnext">◀</button>' : ''}
+    ${office ? '<button class="btn danger" id="pdel">🗑 מחק</button>' : ''}<button class="btn" id="pclose">סגור</button></div>`);
+  photoUrl(p.path).then(u => { const im = s.querySelector('#pbig'); if (im) im.src = u; }).catch(() => {});
+  s.querySelector('#pclose').onclick = closeSheet;
+  const pv = s.querySelector('#pprev'); if (pv) pv.onclick = () => photoView(c, i - 1);
+  const nx = s.querySelector('#pnext'); if (nx) nx.onclick = () => photoView(c, i + 1);
+  const dl = s.querySelector('#pdel');
+  if (dl) dl.onclick = async () => {
+    closeSheet();
+    if (!await ask('תמונות', 'למחוק את התמונה? אי אפשר לשחזר.', 'מחק', 'ביטול')) return;
+    try { await S.cloud.deletePhoto(p); toast('התמונה נמחקה'); } catch (e) { info('תמונות', 'לא נמחק: ' + (e.message || e)); }
+    photoBox();
+  };
+}
 function remBox() {
   const box = $('#rembox'); if (!box || !S.card) return;
   const c = S.card, rec = c.id != null ? S.recs.get(c.id) || c.rec : null, off = MISSING.has('remind_at') || S.readonly || c.id == null;
@@ -2045,17 +2139,27 @@ function groupLinkOf(group) {
   return '';
 }
 const groupTitle = g => String(g || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-async function whatsapp(msgIn, head, groupIn) {
+async function whatsapp(msgIn, head, groupIn, tidIn) {
   if (!S.readonly) { try { await loadWaSetting(); saveCache(); } catch {} }   // newest choice of the admin
   const msg = typeof msgIn === 'string' ? msgIn : message(values());
   const targets = closeTargets(typeof groupIn === 'string' ? groupIn : (S.card ? values().sent_group : ''));
-  let files = [];
+  let files = [], kept = false;
+  const tid = tidIn != null ? tidIn : (S.card && S.card.id != null ? S.card.id : null);   // 1.65: keep the photos in the ticket too
+  const keepOk = tid != null && !S.readonly && S.photosOk === true;   // known only after the card listed its photos
   const s = sheet(`<h3>${esc(head || 'הודעה ל-WhatsApp')}</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
-    <div class="photos"><label class="btn photo">📷 הוסף תמונות<input type="file" id="waphotos" accept="image/*" multiple hidden></label><div class="thumbs" id="thumbs"></div></div>
+    <div class="photos"><label class="btn photo">📷 הוסף תמונות<input type="file" id="waphotos" accept="image/*" multiple hidden></label><div class="thumbs" id="thumbs"></div>${keepOk ? '<label class="keepph"><input type="checkbox" id="wakeep" checked> לשמור את התמונות גם בטיקט</label>' : ''}</div>
     ${targets.length ? `<div class="targets">${targets.map((g, i) => `<button class="btn wa tgt" data-t="${i}">שלח לקבוצה: ${esc(groupTitle(g))}${groupLinkOf(g) ? ' 🔗' : ''}</button>`).join('')}
       <p class="hint">${targets.some(groupLinkOf) ? '🔗 — הקבוצה נפתחת בעצמה, ההודעה מועתקת: לחץ בשדה ההודעה ← הדבק ← שלח. ' : ''}${targets.some(g => !groupLinkOf(g)) ? 'בלי 🔗 — שם הקבוצה מועתק, ב-WhatsApp אפשר להדביק אותו בחיפוש.' : ''}${targets.length > 1 ? ' יש לשלוח לכל הקבוצות.' : ''}</p></div>` : ''}
     <div class="btns"><button class="btn wa" id="wasend">${targets.length ? 'שלח (בחירה)' : 'שלח'}</button><button class="btn" id="wacopy">העתק</button><button class="btn" id="waclose">סגור</button></div>`);
+  const keep = async () => {                // 1.65: once, in the background — the share must start at the tap
+    if (kept || !files.length || !keepOk || !(s.querySelector('#wakeep') || {}).checked) return;
+    kept = true;
+    const list = files.slice();
+    uploadPhotos(tid, list).then(() => { toast(`${list.length} תמונות נשמרו בטיקט`); if (S.card && S.card.id === tid) photoBox(); })
+      .catch(e => { kept = false; toast('התמונות לא נשמרו בטיקט: ' + (e.message || e), 5000); });
+  };
   const sendTo = async (t, group) => {      // files → share sheet of the phone; text only → WhatsApp contact picker
+    setTimeout(keep, 0);
     const link = group && !files.length ? groupLinkOf(group) : '';
     if (link) {                               // 1.58: the group opens by its link, the message waits on the clipboard
       let copied = true;
