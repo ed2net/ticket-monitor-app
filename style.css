@@ -314,3 +314,13 @@ body.noscroll{overflow:hidden}
 .histbar.bad{background:#ffe3e3;border-color:#e09a9a;color:#7a1c1c}
 .histbar.bad .hbtn{border-color:#e09a9a;color:#7a1c1c}
 .sheet .hitem .hopen{margin-top:6px;padding:5px 12px;font-size:13px;background:#eef3fa;border:1px solid #c9d6e4;border-radius:10px;color:#1f3a5f;font-weight:700}
+/* 1.70: «יומן שינויים» — a card per change */
+.sheet .hcards{display:flex;flex-direction:column;gap:8px}
+.sheet .hcard{background:#fff;border:1px solid #d5dde7;border-radius:12px;padding:8px 10px;font-size:14px;line-height:1.5}
+.sheet .hcard .hh{color:#6b7785;margin-bottom:2px}
+.sheet .hcard .hh b{color:#1f3a5f}
+.sheet .hcard .hr .hl{display:inline-block;min-width:96px;color:#5d6d7e}
+.sheet .hcard s{color:#9aa5b1}
+.sheet .hcard i{color:#b0b8c2;font-style:normal}
+.sheet .hb{display:inline-block;padding:0 6px;border-radius:6px;font-size:12px}
+.sheet .hb.ok{background:#e3f6ea;color:#1e6b3a}.sheet .hb.new{background:#e8f0ff;color:#16365c}.sheet .hb.del{background:#ffe3e3;color:#7a1c1c}

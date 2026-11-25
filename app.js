@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.69';
+const APP_VERSION = 'mobile 1.70';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -2521,16 +2521,26 @@ async function whatsapp(msgIn, head, groupIn, tidIn, opts = {}) {
   s.querySelector('#wacopy').onclick = async () => { try { await navigator.clipboard.writeText($('#wamsg').value.trim()); toast('הטקסט הועתק'); } catch { $('#wamsg').select(); document.execCommand('copy'); toast('הטקסט הועתק'); } };
   s.querySelector('#waclose').onclick = closeSheet;
 }
-async function showHistory(id) {
-  if (S.readonly) return info('היסטוריה', 'לא זמין במצב לא מקוון.');
+async function showHistory(id) {       // 1.70: «יומן שינויים» — a card per change, old crossed out, new bold
+  if (S.readonly) return info('יומן שינויים', 'לא זמין במצב לא מקוון.');
   let entries;
-  try { entries = await S.cloud.ticketHistory(id); } catch (e) { return info('היסטוריה', errText(e)); }
-  const act = {insert: 'נוצר', update: 'שונה', delete: 'נמחק'};
+  try { entries = await S.cloud.ticketHistory(id); } catch (e) { return info('יומן שינויים', errText(e)); }
+  const hidden = new Set(['close_check', 'version', 'updated_at', 'updated_by']);
   const val = (row, c) => DATE_COLS.has(c) ? serverDateText((row || {})[c]) : norm((row || {})[c]);
-  const html = entries.length ? entries.map(e => `<div class="hist"><b><bdi dir="ltr">${esc(localTime(e.at))}</bdi> · ${esc(userName(e.by_user))} · ${act[e.action] || e.action}</b>
-    ${(e.action === 'update' ? (e.changed || []).filter(c => LABEL[c]).map(c => `<div>${esc(LABEL[c])}: ${esc(val(e.old_row, c) || '—')} ← ${esc(val(e.new_row, c) || '—')}</div>`).join('') : '')}</div>`).join('')
-    : '<p>אין רישומים ביומן.</p>';
-  const s = sheet(`<h3>היסטוריה</h3>${html}<div class="btns"><button class="btn" id="hclose">סגור</button></div>`);
+  const cut = t => t.length > 60 ? t.slice(0, 59) + '…' : t;
+  const card = e => {
+    const phone = e.action === 'update' && (e.changed || []).includes('close_check') && norm((e.new_row || {}).close_check);
+    const badge = phone ? '<span class="hb ok">📱 נסגר בטלפון</span>' : e.action === 'insert' ? '<span class="hb new">➕ נוצר</span>'
+      : e.action === 'delete' ? '<span class="hb del">🗑 נמחק</span>' : '';
+    const rows = e.action !== 'update' ? [] : (e.changed || []).filter(c => LABEL[c] && !hidden.has(c)).map(c => {
+      const a = val(e.old_row, c), b = val(e.new_row, c);
+      if (c === 'fault_geo') return `<div class="hr"><span class="hl">${esc(LABEL[c])}</span><b>${!a ? 'נקבעה' : !b ? 'נמחקה' : 'עודכנה'}</b></div>`;
+      return `<div class="hr"><span class="hl">${esc(LABEL[c])}</span>${a ? `<s>${esc(cut(a))}</s>` : '<i>—</i>'} ← ${b ? `<b>${esc(cut(b))}</b>` : '<i>—</i>'}</div>`;
+    });
+    return `<div class="hcard"><div class="hh"><b>👤 ${esc(userName(e.by_user))}</b> <bdi dir="ltr">${esc(localTime(e.at))}</bdi> ${badge}</div>${rows.join('')}</div>`;
+  };
+  const html = entries.length ? entries.map(card).join('') : '<p>אין רישומים ביומן.</p>';
+  const s = sheet(`<h3>🕘 יומן שינויים</h3><div class="hcards">${html}</div><div class="btns"><button class="btn" id="hclose">סגור</button></div>`);
   s.querySelector('#hclose').onclick = closeSheet;
 }
 async function pushLast() {        // 1.51: the last push that reached this phone (written by sw.js)
