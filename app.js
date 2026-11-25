@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.70';
+const APP_VERSION = 'mobile 1.71';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1032,7 +1032,7 @@ function openCard(id, prefill) {
   guard();
 }
 // 1.44 / 10.75: a technician (role 'tech') sees only his tickets and changes only the closing fields
-const TECH_EDIT = new Set(['close_type', 'infrastructure', 'close_date', 'solution', 'notes', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before', 'bezeq_order']);   // 1.52: + the place of the fault; 1.59: + מס' הזמנה בזק
+const TECH_EDIT = new Set(['status', 'close_type', 'infrastructure', 'close_date', 'solution', 'notes', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before', 'bezeq_order']);   // 1.52: + the place of the fault; 1.59: + מס' הזמנה בזק
 const isTech = () => S.role === 'tech';
 const canEdit = c => !S.readonly && !MISSING.has(c) && (!isTech() || TECH_EDIT.has(c));
 function fieldHtml(c) {
@@ -1197,12 +1197,12 @@ function onEdit(col) {
     const st = stClass({status: inputOf('status').value, close_date: ''});
     const cd = inputOf('close_date');
     if (st === 'finish' && cd && !norm(cd.value)) { cd.value = nowText(); toast('תאריך סגירה מולא: ' + cd.value); }
+    else if (st !== 'finish' && cd && norm(cd.value) && canEdit('close_date')) { cd.value = ''; toast('הטיקט נפתח מחדש — תאריך הסגירה נמחק'); }   // 1.71
   }
   if (DATE_COLS.has(col)) { const el = inputOf(col); el.classList.toggle('bad', !!norm(el.value) && !parseDate(el.value)); }
   if ((col === 'contractor' || col === 'escalation_date' || col === 'close_date') && !S.readonly) {   // 1.24–1.25 / 10.38–10.39
     const st = inputOf('status'), v = values();
     let want = st && autoStatus(v.status, v.contractor, v.escalation_date, v.close_date, col === 'close_date');
-    if (isTech() && want && want !== 'FINISH') want = null;      // 1.44: a technician only closes
     if (want && want !== norm(st.value)) { st.value = want; toast('סטטוס: ' + want); }
   }
   if (col === 'fdt') {
@@ -2284,7 +2284,7 @@ function rowMenu(id) {
       <button class="mi" data-m="copy">העתק</button>
       ${personFor(r.contractor) && waPhone(personFor(r.contractor).phone) ? `<button class="mi wa" data-m="sendc">שלח לקבלן: ${esc(personName(personFor(r.contractor)))}</button>` : ''}
       <button class="mi wa" data-m="send">שלח ב-WhatsApp… (בחירת איש קשר)</button>
-      ${ro ? '' : '<button class="mi" data-m="dup">שכפל לטיקט חדש</button><button class="mi" data-m="status">סטטוס ‹</button><button class="mi" data-m="contr">קבלן מבצע ‹</button>'}
+      ${ro ? (S.readonly ? '' : '<button class="mi" data-m="status">סטטוס ‹</button>') : '<button class="mi" data-m="dup">שכפל לטיקט חדש</button><button class="mi" data-m="status">סטטוס ‹</button><button class="mi" data-m="contr">קבלן מבצע ‹</button>'}
       ${isTech() ? '' : '<button class="mi" data-m="pick">☑ בחר כמה טיקטים</button>'}
     </div><div class="btns"><button class="btn" data-m="close">ביטול</button></div>`);
   s.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
