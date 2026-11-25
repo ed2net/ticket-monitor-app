@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.66';
+const APP_VERSION = 'mobile 1.67';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1238,6 +1238,35 @@ function wzSavedCab(W) {                  // [lat, lng] of the cabinet saved for
 function wzFixes(W) {                     // the address fields the technician corrected: [[label, was, now]]
   return WZ_ADDR.filter(([c]) => norm(W.addr[c]) !== norm(W.before[c])).map(([c, l]) => [l, norm(W.before[c]), norm(W.addr[c])]);
 }
+// 1.67: the closing message of the technician — a fixed template (as Alex sends it), not the admin's V fields;
+// no קוד תקלה (HP 30…) — not for everybody; a corrected address field shows what it was
+const WZ_MSG = [['site', 'מתחם'], ['city', 'עיר'], ['street', 'רחוב'], ['house', 'בית'], ['entrance', 'כניסה'], ['cabinet', 'ארונית'],
+  ['work_type', 'סוג העבודה'], ['fault', 'זיהוי תקלה'], ['bezeq_order', "מס' הזמנה בזק"], ['close_type', 'סוג סגירת התקלה'], ['solution', 'פתרון']];
+const WZ_MSG_OPT = new Set(['entrance']);          // only when filled
+function wzMessage(W, v) {
+  const lines = [], fix = new Set(WZ_ADDR.map(([k]) => k).filter(k => norm(W.addr[k]) !== norm(W.before[k])));
+  const ltr = x => x && !/[\u0590-\u05ff]/.test(x) ? '\u2066' + x + '\u2069' : x;
+  if (norm(v.fdt)) lines.push(`*מס' טיקט: ${norm(v.fdt)}*`, '\u200f━━━━━━━━━━━━');
+  for (const [c, l] of WZ_MSG) {
+    if (c === 'bezeq_order' && MISSING.has(c)) continue;
+    const parts = String(v[c] || '').split('\n').map(x => x.trim()).filter(Boolean);
+    if (fix.has(c)) {
+      lines.push(`*${l}:* ${ltr(parts[0] || '—')} _(תוקן בשטח, היה: ${ltr(norm(W.before[c])) || '—'})_`);
+      continue;
+    }
+    if (!parts.length && WZ_MSG_OPT.has(c)) continue;
+    lines.push(parts.length ? `*${l}:* ${ltr(parts[0])}` : `*${l}:*`, ...parts.slice(1).map(x => '\u200f' + x));
+  }
+  if (W.st !== 'FINISH') lines.push(`*סטטוס:* ${W.st}`);
+  return lines.join('\n');
+}
+async function wzOldPhotos(W) {          // the photos the ticket had before the closing — they go to the group too
+  const out = [];
+  for (const r of (W.hadRows || []).slice(0, 10)) {
+    try { const b = await S.cloud.photoBlob(r.path); out.push(new File([b], String(r.path).split('/').pop() || 'photo.jpg', {type: b.type || 'image/jpeg'})); } catch {}
+  }
+  return out;
+}
 function wzOk(W, step) {
   if (step === 1) return !!(W.cab && norm(W.addr.cabinet));
   if (step === 2) return !!(norm(W.sol) && W.fault && (!W.photoReq || W.files.length + W.had > 0));
@@ -1247,10 +1276,10 @@ function wzOk(W, step) {
 async function closeByTech() {            // 1.44 → 1.66: the 3-step closing instead of one button
   const c = S.card; if (!c || c.id == null || S.readonly) return;
   const v = values();
-  let had = 0;
-  if (S.photosOk === true) { try { had = (await S.cloud.photos(c.id)).length; } catch {} }
+  let had = 0, hadRows = [];
+  if (S.photosOk === true) { try { hadRows = await S.cloud.photos(c.id); had = hadRows.length; } catch {} }
   const W = {id: c.id, step: 1, before: v, addr: Object.fromEntries(WZ_ADDR.map(([k]) => [k, v[k] || ''])), cab: null, fault: null,
-    sol: v.solution || '', files: [], had, photoReq: S.photosOk === true, ct: v.close_type || '', st: 'FINISH',
+    sol: v.solution || '', files: [], had, photoReq: S.photosOk === true, hadRows, ct: v.close_type || '', st: 'FINISH',
     code: v.infrastructure || '', cd: nowText(), notes: v.notes || '', busy: false};
   S.wiz = W;
   wzRender();
@@ -1376,7 +1405,7 @@ async function wzSubmit() {
   const W = S.wiz, c = S.card; if (!W || !c) return;
   W.busy = true; wzRender();
   const {after, changed, cab} = wzResult(W);
-  const msg = message(after), group = after.sent_group, id = c.id, files = W.files.slice();
+  const msg = wzMessage(W, after), group = after.sent_group, id = c.id, files = W.files.slice();
   try {
     const res = await saveChanges(c, after, changed);
     if (!res) { W.busy = false; return wzRender(); }
@@ -1398,7 +1427,9 @@ async function wzSubmit() {
   }
   wzClose(); closeCard();
   renderList();
-  whatsapp(msg, W.st === 'FINISH' ? 'נסגר ✓ — שלח לקבוצה' : 'נשמר «המשך טיפול» — שלח לקבוצה', group, id, {files, kept: true});
+  const old = await wzOldPhotos(W);
+  whatsapp(msg, W.st === 'FINISH' ? 'נסגר ✓ — שלח לקבוצה' : 'נשמר «המשך טיפול» — שלח לקבוצה', group, id,
+    {files: [...old, ...files], kept: true, note: 'הודעת סגירה של טכנאי — בלי קוד תקלה. התמונות מצורפות.'});
 }
 // offline closings — localStorage, sent again on «online» / at the start
 const PENDING_KEY = 'tm_pending_close';
@@ -2349,7 +2380,7 @@ async function whatsapp(msgIn, head, groupIn, tidIn, opts = {}) {
   let files = (opts.files || []).slice(), kept = !!opts.kept;     // 1.66: the photos of the closing are there already (and kept)
   const tid = tidIn != null ? tidIn : (S.card && S.card.id != null ? S.card.id : null);   // 1.65: keep the photos in the ticket too
   const keepOk = tid != null && !S.readonly && S.photosOk === true;   // known only after the card listed its photos
-  const s = sheet(`<h3>${esc(head || 'הודעה ל-WhatsApp')}</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
+  const s = sheet(`<h3>${esc(head || 'הודעה ל-WhatsApp')}</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">${esc(opts.note || 'השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).')}</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
     <div class="photos"><label class="btn photo">📷 הוסף תמונות<input type="file" id="waphotos" accept="image/*" multiple hidden></label><div class="thumbs" id="thumbs"></div>${keepOk ? '<label class="keepph"><input type="checkbox" id="wakeep" checked> לשמור את התמונות גם בטיקט</label>' : ''}</div>
     ${targets.length ? `<div class="targets">${targets.map((g, i) => `<button class="btn wa tgt" data-t="${i}">שלח לקבוצה: ${esc(groupTitle(g))}${groupLinkOf(g) ? ' 🔗' : ''}</button>`).join('')}
       <p class="hint">${targets.some(groupLinkOf) ? '🔗 — הקבוצה נפתחת בעצמה, ההודעה מועתקת: לחץ בשדה ההודעה ← הדבק ← שלח. ' : ''}${targets.some(g => !groupLinkOf(g)) ? 'בלי 🔗 — שם הקבוצה מועתק, ב-WhatsApp אפשר להדביק אותו בחיפוש.' : ''}${targets.length > 1 ? ' יש לשלוח לכל הקבוצות.' : ''}</p></div>` : ''}
