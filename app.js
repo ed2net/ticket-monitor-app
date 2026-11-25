@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.65';
+const APP_VERSION = 'mobile 1.66';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -13,7 +13,7 @@ const F = [['fdt', "מס' טיקט FDT"], ['entry_date', 'תאריך כניסה'
   ['solution', 'פתרון'], ['notes', 'הערות']];
 const COLS = F.map(x => x[0]);
 // 1.52 / 11.19 (SQL 24): the place of the cause of the fault — kept with the ticket, not one of the 21 fields
-const EXTRA = ['fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before'];      // + 1.54 / 11.21 (SQL 25): a reminder
+const EXTRA = ['fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before', 'close_check'];   // 1.66: + close_check (SQL 30)      // + 1.54 / 11.21 (SQL 25): a reminder
 const DB_COLS = COLS.concat(EXTRA);
 const LABEL = Object.fromEntries(F);
 const DATE_COLS = new Set(['entry_date', 'escalation_date', 'close_date', 'remind_at']);
@@ -50,7 +50,7 @@ function fiberCode(fault, solution) {   // the קרע סיב cable decides the c
 }
 const LOOKUP = {sent_by: 'sender', sent_group: 'channel', city: 'city', site: 'site', work_type: 'work_type',
   contractor: 'contractor', fault: 'fault', close_type: 'close_type', status: 'status', inspector: 'inspector'};
-const NEW_COLS = new Set(['inspector', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before', 'bezeq_order']);      // added later (SQL 06 / 24): the app still works without them
+const NEW_COLS = new Set(['inspector', 'fault_place', 'fault_geo', 'remind_at', 'remind_text', 'remind_by', 'remind_before', 'bezeq_order', 'close_check']);      // added later (SQL 06 / 24): the app still works without them
 const MISSING = new Set();
 const META = ['id', 'version', 'created_at', 'created_by', 'updated_at', 'updated_by'];
 const sel = () => META.concat(DB_COLS.filter(c => !MISSING.has(c))).join(',');
@@ -766,6 +766,7 @@ async function fullLoad() {
   saveCache();
   loadCabs();
   setTimeout(remDue, 300);                       // 1.54: due reminders when the app opens
+  setTimeout(pendingFlush, 1500);                // 1.66: closings made without internet
 }
 async function loadCabs() {             // 1.52: in the background — the list is shown at once
   try { const rows = await S.cloud.loadCabs(); S.cabOk = rows !== null; S.cabs = new Map((rows || []).filter(r => r.key).map(r => [r.key, r])); }
@@ -1134,7 +1135,7 @@ function renderCard() {
     <div class="form">
       <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all the fields, same order as the table / desktop card (+ מקום התקלה) -->
       ${datalists()}
-      ${isTech() && !isNew && !S.readonly && stClass(rec) !== 'finish' ? '<button class="btn closet" id="closet">✓ סגור תקלה (FINISH)</button>' : ''}
+      ${isTech() && !isNew && !S.readonly && stClass(rec) !== 'finish' ? '<button class="btn closet" id="closet">✓ סגור תקלה</button>' : ''}
     </div>
     <div class="bottom"><button class="btn goback" id="back2" aria-label="חזרה">→ חזרה</button><button class="btn wa" id="wa">WhatsApp</button><button class="btn save" id="save" ${S.readonly ? 'disabled' : ''}>שמור</button></div></div>`;
   $('#back').onclick = closeCard;
@@ -1212,25 +1213,224 @@ function onEdit(col) {
   const dirty = changedCols(values()).length > 0;
   if (dirty !== c.dirty) { c.dirty = dirty; track(); renderOthersBar(); }
 }
-async function closeByTech() {        // 1.44: required closing fields → תאריך סגירה = now → FINISH → save
-  const req = reqFields().close, v = values();
-  const need = COLS.filter(c => req.has(LABEL[c]) && c !== 'close_date' && c !== 'status' && !norm(v[c]));
-  if (need.length) {
-    need.forEach(c => { const f = $('#f-' + c); if (f) f.classList.add('rq-close'); });
-    const own = need.filter(c => TECH_EDIT.has(c)), office = need.filter(c => !TECH_EDIT.has(c));
-    return info('חסרים שדות לסגירה', (own.length ? 'יש למלא: ' + own.map(c => LABEL[c]).join(', ') : '') +
-      (office.length ? (own.length ? '\n' : '') + 'חסר (ממלאים במשרד): ' + office.map(c => LABEL[c]).join(', ') : ''));
-  }
-  if (!await ask('סגירת תקלה', `לסגור את טיקט ${S.card.rec.fdt}?\nתאריך סגירה: ${norm(v.close_date) || nowText()}`, 'סגור', 'ביטול')) return;
-  const cd = inputOf('close_date'), st = inputOf('status');
-  if (!norm(cd.value)) cd.value = nowText();
-  st.value = 'FINISH';
-  onEdit('close_date');
-  const id = S.card.id, msg = message(values()), group = values().sent_group;
-  await save();
-  const r = S.recs.get(id);
-  if (r && stClass(r) === 'finish' && S.view === 'list') whatsapp(msg, 'נסגר ✓ — שלח לקבוצה עם תמונות', group, id);   // 1.45 / 1.46
+// ───────────── 1.66 / 11.45: the technician closes a fault in 3 steps — on the spot (live GPS only) ─────────────
+const WZ_ADDR = [['city', 'עיר'], ['street', 'רחוב'], ['house', 'בית'], ['entrance', 'כניסה'], ['site', 'מתחם'], ['cabinet', 'ארונית']];
+const WZ_FAR = 300;                       // m — farther from the saved cabinet → a warning (not a stop)
+const WZ_STEPS = ['מיקום', 'מה עשית', 'סגירה'];
+const WZ_STATUS = ['FINISH', 'המשך טיפול'];
+function distM(a, b) {                   // metres between two [lat, lng]
+  if (!a || !b) return null;
+  const R = 6371000, r = x => x * Math.PI / 180, dLa = r(b[0] - a[0]), dLo = r(b[1] - a[1]);
+  const h = Math.sin(dLa / 2) ** 2 + Math.cos(r(a[0])) * Math.cos(r(b[0])) * Math.sin(dLo / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(h)));
 }
+const mText = m => m == null ? '' : m >= 1000 ? (m / 1000).toFixed(1) + ' ק״מ' : m + ' מ׳';
+function wzCode(W) {                      // קוד תקלה — as the table does it: by the fault (and the cable of a קרע סיב)
+  const fault = norm(W.before.fault), byCable = fiberCode(fault, W.sol);
+  if (byCable) return byCable;
+  const opts = faultCodes(fault), cur = norm(W.code);
+  return cur || opts[0] || '';
+}
+function wzSavedCab(W) {                  // [lat, lng] of the cabinet saved for everybody (by the address in step 1)
+  const key = resolveCab(W.addr.site, W.addr.cabinet), r = key && S.cabs ? S.cabs.get(key) : null;
+  return r ? parseGeo(r.geo) : null;
+}
+function wzFixes(W) {                     // the address fields the technician corrected: [[label, was, now]]
+  return WZ_ADDR.filter(([c]) => norm(W.addr[c]) !== norm(W.before[c])).map(([c, l]) => [l, norm(W.before[c]), norm(W.addr[c])]);
+}
+function wzOk(W, step) {
+  if (step === 1) return !!(W.cab && norm(W.addr.cabinet));
+  if (step === 2) return !!(norm(W.sol) && W.fault && (!W.photoReq || W.files.length + W.had > 0));
+  const fin = W.st === 'FINISH';
+  return !!(W.st && (!fin || (norm(W.ct) && norm(wzCode(W)) && parseDate(W.cd))));
+}
+async function closeByTech() {            // 1.44 → 1.66: the 3-step closing instead of one button
+  const c = S.card; if (!c || c.id == null || S.readonly) return;
+  const v = values();
+  let had = 0;
+  if (S.photosOk === true) { try { had = (await S.cloud.photos(c.id)).length; } catch {} }
+  const W = {id: c.id, step: 1, before: v, addr: Object.fromEntries(WZ_ADDR.map(([k]) => [k, v[k] || ''])), cab: null, fault: null,
+    sol: v.solution || '', files: [], had, photoReq: S.photosOk === true, ct: v.close_type || '', st: 'FINISH',
+    code: v.infrastructure || '', cd: nowText(), notes: v.notes || '', busy: false};
+  S.wiz = W;
+  wzRender();
+}
+function wzClose() { const el = $('#wiz'); if (el) el.remove(); S.wiz = null; }
+function wzRender() {
+  const W = S.wiz; if (!W) return;
+  let el = $('#wiz');
+  if (!el) { el = document.createElement('div'); el.id = 'wiz'; document.body.appendChild(el); }
+  const r = W.before, st = W.step;
+  const steps = `<div class="wz-steps">${WZ_STEPS.map((t, i) => `<div class="${i + 1 < st ? 'done' : i + 1 === st ? 'on' : ''}"><i></i>${i + 1 < st ? '✓ ' : ''}${i + 1}. ${t}</div>`).join('')}</div>`;
+  const gpsBox = (kind, g, title, help) => `<div class="wz-gps${g ? ' ok' : ''}"><div><b>${g ? '✓ נשמר' : 'עוד לא נשמר'}</b><small>${g
+      ? `<bdi dir="ltr">${esc(g.geo)}</bdi> · ±${g.acc} מ׳ · ${esc(g.at.slice(11))}${g.dist != null ? ' · ' + mText(g.dist) + ' מהארונית' : ''}`
+      : esc(help)}</small></div><button class="btn b" data-gps="${kind}" type="button">${g ? '📍 שוב' : '📍 ' + esc(title)}</button></div>`;
+  let body = '';
+  if (st === 1) {
+    const saved = wzSavedCab(W);
+    body = `<div class="wz-card"><h3>📍 בדוק את הכתובת — תקן אם צריך</h3>
+      <div class="wz-grid">${WZ_ADDR.map(([c, l]) => {
+        const ch = norm(W.addr[c]) !== norm(r[c]), req = c === 'cabinet' && !norm(W.addr[c]);
+        return `<div class="wz-f${ch ? ' chg' : req ? ' req' : ''}"><label>${l}${c === 'cabinet' ? ' *' : ''}</label><input data-a="${c}" value="${esc(W.addr[c])}" autocomplete="off"${['house', 'entrance'].includes(c) ? ' inputmode="text"' : ''}>
+          ${ch ? `<div class="wz-was">תוקן · היה: <s>${esc(r[c] || '—')}</s></div>` : ''}</div>`; }).join('')}</div></div>
+      <div class="wz-card${W.cab ? '' : ' need'}"><h3>📌 מיקום הארונית (GPS) *</h3>
+      ${gpsBox('cab', W.cab, 'אני ליד הארונית', 'עמוד ליד הארונית ולחץ — המיקום נלקח מה-GPS של הטלפון עכשיו')}
+      ${W.cab && W.cab.dist != null && W.cab.dist > WZ_FAR ? `<div class="wz-warn">⚠ אתה ${mText(W.cab.dist)} מהמיקום השמור של הארונית. בדוק שאתה ליד הארונית הנכונה.</div>` : ''}
+      ${!saved && W.cab ? '<div class="wz-note">אין עדיין מיקום שמור לארונית — המיקום הזה יישמר לכולם.</div>' : ''}
+      ${W.cab ? '' : '<div class="wz-hint">חובה: מיקום הארונית</div>'}</div>`;
+  } else if (st === 2) {
+    const n = W.files.length + W.had;
+    body = `<div class="wz-card"><h3>📄 תיאור התקלה <span class="wz-small">(לקריאה בלבד)</span></h3>
+      <div class="wz-ro">${[['work_type', 'סוג העבודה'], ['fault', 'זיהוי תקלה'], ['fault_place', 'מקום התקלה'], ['notes', 'הערות']].filter(([c]) => norm(r[c]))
+        .map(([c, l]) => `<div><span class="k">${l}:</span> ${esc(r[c])}</div>`).join('') || '<div class="k">אין תיאור</div>'}</div></div>
+      <div class="wz-card${norm(W.sol) ? '' : ' need'}"><h3>🛠 מה עשית לתיקון התקלה *</h3>
+      <textarea id="wzsol" class="wz-big" placeholder="כתוב מה עשית… (למשל: הוחלף מחבר בארונית ${esc(W.addr.cabinet || '')}, נבדק אות)">${esc(W.sol)}</textarea></div>
+      ${W.photoReq || W.files.length ? `<div class="wz-card${n ? '' : ' need'}"><h3>📷 תמונות${W.photoReq ? ' * <span class="wz-small">(לפחות אחת)</span>' : ''}</h3>
+      <div class="wz-photos">${W.files.map((f, i) => `<span class="wz-ph"><img src="${URL.createObjectURL(f)}" alt=""><button data-x="${i}" type="button">✕</button></span>`).join('')}
+        <label class="wz-ph add">＋<input type="file" id="wzadd" accept="image/*" multiple hidden></label></div>
+      ${W.had ? `<div class="wz-note">כבר שמורות בטיקט: ${W.had}</div>` : ''}</div>` : ''}
+      <div class="wz-card${W.fault ? '' : ' need'}"><h3>📍 איפה בדיוק הייתה התקלה (GPS) *</h3>
+      ${gpsBox('fault', W.fault, 'אני במקום התקלה', 'עמוד במקום התקלה ולחץ — המיקום נלקח מה-GPS של הטלפון עכשיו')}
+      ${W.fault ? '' : '<div class="wz-hint">חובה: מקום התקלה</div>'}</div>`;
+  } else {
+    const fin = W.st === 'FINISH', code = wzCode(W), cts = lookupValues('close_type');
+    body = `<div class="wz-card"><h3>✅ פרטי הסגירה</h3>
+      <div class="wz-f${W.st ? '' : ' req'}"><label>סטטוס *</label><select data-w="st">${WZ_STATUS.map(x => `<option${x === W.st ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
+      <div class="wz-f${!fin || norm(W.ct) ? '' : ' req'}"><label>סוג סגירת התקלה${fin ? ' *' : ''}</label>${cts.length ? `<select data-w="ct"><option value="">— בחר —</option>${cts.map(x => `<option${x === W.ct ? ' selected' : ''}>${esc(x)}</option>`).join('')}</select>`
+        : `<input data-w="ct" value="${esc(W.ct)}" autocomplete="off">`}</div>
+      <div class="wz-f${!fin || code ? '' : ' req'}"><label>קוד תקלה${fin ? ' *' : ''} <span class="wz-auto">אוטומטי, כמו בטבלה</span></label><input data-w="code" value="${esc(code)}" list="dl-infrastructure" autocomplete="off"></div>
+      ${fin ? `<div class="wz-f${parseDate(W.cd) ? '' : ' req'}"><label>תאריך סגירה *</label><div class="wz-row"><input data-w="cd" value="${esc(W.cd)}" inputmode="numeric" class="ltr"><button class="btn" type="button" id="wznow">עכשיו</button></div></div>` : ''}
+      <div class="wz-f"><label>הערות <span class="wz-small">(לא חובה)</span></label><textarea data-w="notes" rows="3">${esc(W.notes)}</textarea></div></div>
+      <div class="wz-card wz-sum"><h3>📋 סיכום</h3>
+      <div>${wzFixes(W).length ? '✎ תיקונים: ' + wzFixes(W).map(([l, a, b]) => `${esc(l)} <s>${esc(a || '—')}</s> → <b>${esc(b || '—')}</b>`).join(' · ') : 'הכתובת לא שונתה'}</div>
+      <div>📌 ארונית ±${W.cab.acc} מ׳ ${esc(W.cab.at.slice(11))} · 📍 תקלה ±${W.fault.acc} מ׳${W.fault.dist != null ? ' · ' + mText(W.fault.dist) + ' מהארונית' : ''}</div>
+      <div>📷 ${W.files.length + W.had} תמונות</div></div>`;
+  }
+  const ok = wzOk(W, st), last = st === 3;
+  el.innerHTML = `<div class="wz-top"><h1><span>סגירת תקלה · ${esc(r.fdt)}</span><button class="wz-x" id="wzx" type="button">✕</button></h1>
+      <div class="wz-sub">${esc([r.city, [r.street, r.house].filter(Boolean).join(' ')].filter(Boolean).join(', '))}${r.contractor ? ' · ' + esc(r.contractor) : ''}</div>${steps}</div>
+    <div class="wz-body" id="wzbody">${body}</div>
+    <div class="wz-bar"><button class="btn" id="wzback" type="button">${st === 1 ? 'ביטול' : '→ חזרה'}</button>
+      <button class="btn wz-next${ok && !W.busy ? '' : ' dis'}" id="wznext" type="button">${W.busy ? 'שולח…' : last ? (W.st === 'FINISH' ? '✓ סגור ושלח ב-WhatsApp' : '✓ שמור ושלח ב-WhatsApp') : 'אישור והמשך ←'}</button></div>`;
+  wzHook();
+}
+function wzHook() {
+  const W = S.wiz, el = $('#wiz');
+  const soft = () => {                    // refresh the colours / the button without losing the field being typed in
+    const next = $('#wznext'); if (next) next.classList.toggle('dis', !wzOk(W, W.step) || W.busy);
+  };
+  el.querySelectorAll('[data-a]').forEach(i => i.oninput = () => { W.addr[i.dataset.a] = i.value; const f = i.closest('.wz-f');
+    const ch = norm(i.value) !== norm(W.before[i.dataset.a]); f.classList.toggle('chg', ch);
+    let w = f.querySelector('.wz-was'); if (ch && !w) { w = document.createElement('div'); w.className = 'wz-was'; f.appendChild(w); }
+    if (w) { if (ch) w.innerHTML = `תוקן · היה: <s>${esc(W.before[i.dataset.a] || '—')}</s>`; else w.remove(); }
+    if (i.dataset.a === 'cabinet') f.classList.toggle('req', !norm(i.value) && !ch);
+    if (W.cab && ['site', 'cabinet'].includes(i.dataset.a)) { const s = wzSavedCab(W); W.cab.dist = s ? distM(parseGeo(W.cab.geo), s) : null; }
+    soft(); });
+  const sol = $('#wzsol'); if (sol) sol.oninput = () => { W.sol = sol.value; sol.closest('.wz-card').classList.toggle('need', !norm(sol.value)); soft(); };
+  el.querySelectorAll('[data-w]').forEach(i => { const ev = i.tagName === 'SELECT' ? 'onchange' : 'oninput';
+    i[ev] = () => { W[i.dataset.w] = i.value; if (i.tagName === 'SELECT') wzRender(); else { i.closest('.wz-f').classList.toggle('req', false); soft(); } }; });
+  const now = $('#wznow'); if (now) now.onclick = () => { W.cd = nowText(); wzRender(); };
+  el.querySelectorAll('[data-gps]').forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = 'מאתר…';
+    try {
+      const g = await myPlace(), p = [g[0], g[1]], at = nowText(), kind = b.dataset.gps;
+      const cabP = kind === 'cab' ? wzSavedCab(W) : (W.cab ? parseGeo(W.cab.geo) : wzSavedCab(W));
+      W[kind] = {geo: geoText(p), acc: g[2], at, dist: cabP ? distM(p, cabP) : null};
+      if (g[2] > 100) toast(`הדיוק נמוך (±${g[2]} מ׳) — אם אפשר, צא החוצה ונסה שוב`, 5000);
+    } catch (e) { info('מיקום', e.message + '\n\nהמיקום נלקח רק מה-GPS של הטלפון — בלי זה אי אפשר לסגור את התקלה.'); }
+    wzRender();
+  });
+  const add = $('#wzadd'); if (add) add.onchange = async e => {
+    const fs = [...(e.target.files || [])]; e.target.value = ''; if (!fs.length) return;
+    toast('מכין תמונות…');
+    for (const f of fs) W.files.push(await shrinkImage(f, 1600, 0.72));
+    wzRender();
+  };
+  el.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { W.files.splice(+b.dataset.x, 1); wzRender(); });
+  $('#wzx').onclick = async () => { if (await ask('סגירת תקלה', 'לצאת? מה שמילאת כאן לא יישמר.', 'צא', 'המשך למלא')) wzClose(); };
+  $('#wzback').onclick = async () => { if (W.step === 1) { if (await ask('סגירת תקלה', 'לצאת? מה שמילאת כאן לא יישמר.', 'צא', 'המשך למלא')) wzClose(); } else { W.step--; wzRender(); } };
+  $('#wznext').onclick = async () => {
+    if (W.busy) return;
+    if (!wzOk(W, W.step)) {                // what is missing — the red ones
+      el.querySelectorAll('.need, .req').forEach(x => { x.classList.add('shake'); setTimeout(() => x.classList.remove('shake'), 500); });
+      const first = el.querySelector('.need, .req'); if (first) first.scrollIntoView({block: 'center', behavior: 'smooth'});
+      return toast('יש למלא את השדות המסומנים באדום', 3000);
+    }
+    if (W.step < 3) { W.step++; wzRender(); $('#wzbody').scrollTop = 0; return; }
+    await wzSubmit();
+  };
+}
+function wzResult(W) {                    // → {after (all the columns), changed, check (close_check JSON), cab (to save) }
+  const c = S.card, after = values(), fin = W.st === 'FINISH';
+  for (const [k] of WZ_ADDR) after[k] = norm(W.addr[k]);
+  Object.assign(after, {solution: norm(W.sol), status: W.st, close_type: norm(W.ct), infrastructure: norm(wzCode(W)),
+    close_date: fin ? norm(W.cd) : (c.before.close_date || ''), notes: norm(W.notes), fault_geo: W.fault.geo});
+  const check = {by: myName(), at: nowText(), status: W.st, cab: W.cab, fault: W.fault, fixes: wzFixes(W), photos: W.files.length + W.had};
+  if (!MISSING.has('close_check')) after.close_check = JSON.stringify(check);
+  const changed = DB_COLS.filter(x => !MISSING.has(x) && norm(after[x]) !== norm(c.before[x]));
+  const key = resolveCab(W.addr.site, W.addr.cabinet), site = norm(W.addr.site), cabinet = norm(W.addr.cabinet);
+  const cab = key && site && cabinet && !wzSavedCab(W) && S.cabOk !== false ? {key, site, cabinet, geo: W.cab.geo, link: ''} : null;
+  return {after, changed, check, cab};
+}
+async function wzSubmit() {
+  const W = S.wiz, c = S.card; if (!W || !c) return;
+  W.busy = true; wzRender();
+  const {after, changed, cab} = wzResult(W);
+  const msg = message(after), group = after.sent_group, id = c.id, files = W.files.slice();
+  try {
+    const res = await saveChanges(c, after, changed);
+    if (!res) { W.busy = false; return wzRender(); }
+    c.dirty = false;
+    if (cab) { try { const row = await S.cloud.saveCab(cab); S.cabs = S.cabs || new Map(); S.cabs.set(cab.key, row); } catch {} }
+    if (files.length) { try { await uploadPhotos(id, files); } catch (e) { toast('התמונות לא נשמרו בטיקט: ' + (e.message || e), 5000); } }
+  } catch (e) {
+    W.busy = false;
+    if (e instanceof OfflineError) {      // no internet on the spot: kept on the phone, sent when the connection is back
+      await pendingAdd({id, version: c.rec._v, body: recToDb(after, changed), cab, files: await Promise.all(files.map(blobToData)), fdt: after.fdt});
+      wzClose(); closeCard();
+      info('אין חיבור', `הסגירה של טיקט ${after.fdt} נשמרה בטלפון ותישלח לבד כשיחזור האינטרנט (המיקום והשעה — מהמקום).\nאת ההודעה ל-WhatsApp שלח כשיש קליטה.`);
+      return;
+    }
+    wzRender();
+    if (e && e.deleted) return info('סגירה', 'הטיקט נמחק על ידי משתמש אחר.');
+    if (e instanceof AuthError) return sessionEnded();
+    return info('השמירה נכשלה', errText(e));
+  }
+  wzClose(); closeCard();
+  renderList();
+  whatsapp(msg, W.st === 'FINISH' ? 'נסגר ✓ — שלח לקבוצה' : 'נשמר «המשך טיפול» — שלח לקבוצה', group, id, {files, kept: true});
+}
+// offline closings — localStorage, sent again on «online» / at the start
+const PENDING_KEY = 'tm_pending_close';
+const blobToData = b => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
+const dataToBlob = d => fetch(d).then(r => r.blob());
+function pendingList() { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); } catch { return []; } }
+function pendingSave(l) { try { localStorage.setItem(PENDING_KEY, JSON.stringify(l)); } catch { toast('אין מקום בטלפון לשמור את הסגירה', 5000); } }
+async function pendingAdd(x) { const l = pendingList().filter(p => p.id !== x.id); l.push(x); pendingSave(l); }
+async function pendingFlush() {
+  if (pendingFlush.busy || S.readonly || !S.cloud || !navigator.onLine) return 0;
+  const l = pendingList(); if (!l.length) return 0;
+  pendingFlush.busy = true; let sent = 0;
+  try {
+    for (const p of l) {
+      try {
+        const cur = await S.cloud.getTicket(p.id);
+        if (cur) {
+          let row = await S.cloud.updateTicket(p.id, +cur.version, p.body);
+          if (!row) { const again = await S.cloud.getTicket(p.id); row = again ? await S.cloud.updateTicket(p.id, +again.version, p.body) : null; }
+          if (row) applyRow(row);
+          if (p.cab) { try { await S.cloud.saveCab(p.cab); } catch {} }
+          if (p.files && p.files.length && S.photosOk !== false) await uploadPhotos(p.id, await Promise.all(p.files.map(dataToBlob)));
+        }
+        pendingSave(pendingList().filter(x => x.id !== p.id)); sent++;
+        toast(`הסגירה של טיקט ${p.fdt} נשלחה`, 4000);
+      } catch (e) { if (e instanceof OfflineError) break; }
+    }
+  } finally { pendingFlush.busy = false; }
+  if (sent) renderList();
+  return sent;
+}
+window.addEventListener('online', () => setTimeout(pendingFlush, 1500));
 function updateSave() {
   markClosing();
   const v = values(), ch = new Set(changedCols(v));
@@ -2093,11 +2293,14 @@ function message(v) {             // same as the desktop (10.25): only fields wi
   const pl = placeLines(v, v.id != null ? v.id : (S.card ? S.card.id : null));     // 1.53: Waze links
   if (pl.length) lines.push(...(lines.length ? ['\u200f━━━━━━━━━━━━'] : []), ...pl);
   return lines.join('\n'); }
+function closeCheck(v) { try { const o = JSON.parse((v && v.close_check) || ''); return o && typeof o === 'object' ? o : null; } catch { return null; } }
 function placeLines(v, id) {       // 1.53 / 11.20: the cabinet, the place of the fault, the latest earlier fault of the cabinet
   const out = [], key = resolveCab(v.site, v.cabinet), cr = key && S.cabs ? S.cabs.get(key) : null, cp = cr ? parseGeo(cr.geo) : null;
   if (cp) out.push(`*מיקום הארונית:* ${wazeLL(cp)}`);
   const own = parseGeo(v.fault_geo || '');
   if (own) out.push(`*מקום התקלה:* ${norm(v.fault_place) ? norm(v.fault_place) + ' — ' : ''}${wazeLL(own)}`);
+  const ck = closeCheck(v);                                    // 1.66: what the technician corrected on the spot
+  if (ck && ck.fixes && ck.fixes.length) out.push('*תוקן בשטח:* ' + ck.fixes.map(([l, a, b]) => `${l} ${a || '—'} ← ${b || '—'}`).join(', '));
   const past = key && S.recs ? pastFaults(key, id).filter(r => parseGeo(r.fault_geo)) : [];
   if (past.length && !own) { const r = past[0];
     out.push(`*תקלה קודמת בארונית (${(r.entry_date || '').slice(0, 10)}):* ${r.fault_place ? r.fault_place + ' — ' : ''}${wazeLL(parseGeo(r.fault_geo))}`); }
@@ -2139,11 +2342,11 @@ function groupLinkOf(group) {
   return '';
 }
 const groupTitle = g => String(g || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-async function whatsapp(msgIn, head, groupIn, tidIn) {
+async function whatsapp(msgIn, head, groupIn, tidIn, opts = {}) {
   if (!S.readonly) { try { await loadWaSetting(); saveCache(); } catch {} }   // newest choice of the admin
   const msg = typeof msgIn === 'string' ? msgIn : message(values());
   const targets = closeTargets(typeof groupIn === 'string' ? groupIn : (S.card ? values().sent_group : ''));
-  let files = [], kept = false;
+  let files = (opts.files || []).slice(), kept = !!opts.kept;     // 1.66: the photos of the closing are there already (and kept)
   const tid = tidIn != null ? tidIn : (S.card && S.card.id != null ? S.card.id : null);   // 1.65: keep the photos in the ticket too
   const keepOk = tid != null && !S.readonly && S.photosOk === true;   // known only after the card listed its photos
   const s = sheet(`<h3>${esc(head || 'הודעה ל-WhatsApp')}</h3><p style="color:#6b7785;font-size:12.5px;margin-bottom:6px">השדות בהודעה נקבעים על ידי המנהל (סימוני V בתוכנית במחשב).</p><textarea id="wamsg" dir="rtl">${esc(msg)}</textarea>
@@ -2188,6 +2391,7 @@ async function whatsapp(msgIn, head, groupIn, tidIn) {
     s.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { files.splice(+b.dataset.x, 1); thumbs(); });
     s.querySelector('#wasend').textContent = (files.length ? `שלח עם ${files.length} תמונות` : 'שלח') + (targets.length ? ' (בחירה)' : '');
   };
+  if (files.length) thumbs();
   s.querySelector('#waphotos').onchange = async e => {
     const add = [...(e.target.files || [])];
     e.target.value = '';

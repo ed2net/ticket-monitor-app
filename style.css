@@ -258,3 +258,45 @@ body.noscroll{overflow:hidden}
 .pbig{text-align:center}.pbig img{max-width:100%;max-height:62vh;border-radius:8px}
 .keepph{display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14px;color:#285b34}
 .btn.danger{color:#a12b2b;border-color:#e0a1a1}
+/* 1.66: the technician's 3-step closing (variant A) */
+#wiz{position:fixed;inset:0;z-index:60;background:#eef1f4;display:flex;flex-direction:column;direction:rtl}
+.wz-top{background:#1f2a37;color:#fff;padding:12px 16px 10px;flex:none}
+.wz-top h1{margin:0;font-size:20px;display:flex;justify-content:space-between;align-items:center}
+.wz-x{background:none;border:none;color:#fff;font-size:24px;padding:0 4px}
+.wz-sub{font-size:13px;color:#b8c3cf;margin-top:3px}
+.wz-steps{display:flex;gap:6px;margin-top:10px}.wz-steps div{flex:1;text-align:center;font-size:12.5px;color:#8b98a6}
+.wz-steps div i{display:block;height:5px;border-radius:3px;background:#3a4756;margin-bottom:5px}
+.wz-steps .done i{background:#2fb36b}.wz-steps .on i{background:#4aa3ff}.wz-steps .on{color:#fff;font-weight:700}.wz-steps .done{color:#9fe0bb}
+.wz-body{flex:1;overflow:auto;padding:12px;-webkit-overflow-scrolling:touch}
+.wz-card{background:#fff;border-radius:14px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.06);border:1.5px solid transparent}
+.wz-card.need{border-color:#f0b4b4}
+.wz-card h3{margin:0 0 8px;font-size:15.5px;color:#3e4c5b}.wz-small{font-weight:400;font-size:12px;color:#8b98a6}
+.wz-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+.wz-f{margin-bottom:8px}.wz-f label{display:block;font-size:13px;color:#5d6d7e;margin-bottom:4px}
+.wz-f input,.wz-f select,.wz-f textarea{width:100%;border:1.5px solid #d6dce3;border-radius:10px;padding:10px 12px;font-size:17px;background:#fff;color:#1f2a37;font-family:inherit}
+.wz-f.req input,.wz-f.req select,.wz-f.req textarea{background:#fff1f1;border-color:#f0b4b4}
+.wz-f.chg input{border-color:#4aa3ff;background:#f2f8ff}
+.wz-was{font-size:12.5px;color:#2b6cb0;margin-top:3px}.wz-was s{color:#8b98a6}
+.wz-gps{display:flex;gap:8px;align-items:center;border:1.5px dashed #f0b4b4;background:#fff1f1;border-radius:12px;padding:10px 12px}
+.wz-gps.ok{border:1.5px solid #9fd6b4;background:#effaf3}
+.wz-gps b{font-size:15px}.wz-gps small{display:block;color:#6b7785;font-size:12.5px;margin-top:2px}
+.wz-gps .btn{margin-inline-start:auto;white-space:nowrap}
+.btn.b{background:#4aa3ff;border-color:#4aa3ff;color:#fff}
+.wz-hint{font-size:12.5px;color:#b03b3b;margin-top:6px}.wz-note{font-size:12.5px;color:#2f6b45;margin-top:6px}
+.wz-warn{font-size:13.5px;color:#7a4b00;background:#fff4d6;border:1px solid #f1d07a;border-radius:10px;padding:8px 10px;margin-top:8px}
+.wz-ro{background:#f6f7f9;border-radius:10px;padding:10px 12px;font-size:16px;line-height:1.5}.wz-ro .k{color:#6b7785;font-size:13px}
+.wz-big{width:100%;min-height:50vh;border:1.5px solid #d6dce3;border-radius:12px;padding:12px;font-size:17px;line-height:1.5;font-family:inherit;resize:vertical}
+.wz-card.need .wz-big{background:#fff1f1;border-color:#f0b4b4}
+.wz-photos{display:flex;gap:8px;flex-wrap:wrap}
+.wz-ph{position:relative;width:76px;height:76px;border-radius:10px;overflow:hidden;background:#dde3e9}
+.wz-ph img{width:100%;height:100%;object-fit:cover}.wz-ph button{position:absolute;top:2px;left:2px;border:none;border-radius:50%;width:22px;height:22px;background:rgba(0,0,0,.55);color:#fff;font-size:12px;padding:0}
+.wz-ph.add{display:flex;align-items:center;justify-content:center;font-size:28px;color:#d64545;background:#fff1f1;border:1.5px dashed #f0b4b4}
+.wz-card:not(.need) .wz-ph.add{color:#2f6b45;background:#effaf3;border-color:#9fd6b4}
+.wz-row{display:flex;gap:8px}.wz-row input{flex:1}.wz-row .btn{flex:none;width:auto;padding:8px 14px}
+.wz-auto{font-size:12px;color:#2b6cb0;margin-inline-start:6px}
+.wz-sum div{font-size:14px;margin:4px 0;color:#3e4c5b}.wz-sum s{color:#8b98a6}
+.wz-bar{flex:none;background:#fff;border-top:1px solid #dde3e9;display:flex;gap:10px;padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
+.wz-bar .btn{flex:1;font-size:17px;padding:12px}
+.wz-next{flex:2!important;background:#2fb36b!important;border-color:#2fb36b!important;color:#fff!important;font-weight:700}
+.wz-next.dis{background:#b9dcc8!important;border-color:#b9dcc8!important}
+.shake{animation:wzshake .4s}@keyframes wzshake{25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
