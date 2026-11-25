@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.67';
+const APP_VERSION = 'mobile 1.68';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -673,7 +673,7 @@ async function renderLogin(msg) {
     <label class="chk"><input id="rem" type="checkbox" ${S.session.remember !== false ? 'checked' : ''}> זכור אותי בטלפון הזה</label>
     <button id="go" class="big">כניסה</button>
     <div id="err" class="err">${esc(msg || '')}</div>
-    ${cache ? `<button id="off" class="ghost">אין חיבור? פתח עותק אחרון (<bdi dir="ltr">${esc(cache.saved_text || '')}</bdi>, קריאה בלבד)</button>` : ''}
+    ${cache && (!cache.uid || !S.session.uid || cache.uid === S.session.uid) ? `<button id="off" class="ghost">אין חיבור? פתח עותק אחרון (<bdi dir="ltr">${esc(cache.saved_text || '')}</bdi>, קריאה בלבד)</button>` : ''}
     <div class="note">הוספה למסך הבית: iPhone — שיתוף ← "הוסף למסך הבית" · Android — תפריט ⋮ ← "הוסף למסך הבית"</div>
   </div></div>`;
   const go = async () => {
@@ -688,7 +688,7 @@ async function renderLogin(msg) {
   };
   $('#go').onclick = go;
   $('#pw').onkeydown = e => { if (e.key === 'Enter') go(); };
-  if (cache) $('#off').onclick = () => enterOffline(cache);
+  if ($('#off')) $('#off').onclick = () => enterOffline(cache);
 }
 
 // ───────────── online / offline ─────────────
@@ -733,9 +733,9 @@ async function enterOnline() {
   try { await fullLoad(); }
   catch (e) {
     if (e instanceof AuthError) return sessionEnded();
-    const c = await kv.get('cache');
-    if (c) return enterOffline(c);
-    return renderLogin(errText(e));
+    const c = await kv.get('cache');      // 1.68: only his own copy, and only when there is no network — else the reason is shown
+    if (c && e instanceof OfflineError && (!c.uid || c.uid === ((S.cloud.user || {}).id || ''))) return enterOffline(c);
+    return renderLogin('הטעינה נכשלה: ' + errText(e));
   }
   startLive();
   renderList();
@@ -956,7 +956,7 @@ function renderList() {
   $('#q').oninput = e => { S.query = e.target.value; S.limit = 60; clearTimeout(S.qT); S.qT = setTimeout(renderListBody, 150); };
   document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { S.chip = S.chip === b.dataset.chip ? 'all' : b.dataset.chip; S.limit = 60; try { localStorage.setItem('tm_chip', S.chip); } catch {} renderList(); });
   if ($('#new')) $('#new').onclick = () => openCard(null);
-  if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(() => kv.get('cache')).then(c => usableCache(c) ? quickStart(c) : enterOnline()).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('')); } else renderLogin(''); };
+  if ($('#retry')) $('#retry').onclick = () => { if (S.cloud.rt || S.session.rt) { S.cloud.rt = S.cloud.rt || S.session.rt; renderLoading('מתחבר...'); S.cloud.refresh().then(() => kv.get('cache')).then(c => usableCache(c) ? quickStart(c) : enterOnline()).catch(e => e instanceof OfflineError ? (toast('עדיין אין חיבור'), renderList()) : renderLogin('הכניסה הקודמת הסתיימה — יש להתחבר מחדש.')); } else renderLogin('יש להתחבר מחדש.'); };
   renderListBody();
 }
 // 1.34 / 10.55: בהמתנה / בעבודה longer than N hours (admin's choice, default 48) since תאריך כניסה
