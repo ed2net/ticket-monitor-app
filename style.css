@@ -300,3 +300,17 @@ body.noscroll{overflow:hidden}
 .wz-next{flex:2!important;background:#2fb36b!important;border-color:#2fb36b!important;color:#fff!important;font-weight:700}
 .wz-next.dis{background:#b9dcc8!important;border-color:#b9dcc8!important}
 .shake{animation:wzshake .4s}@keyframes wzshake{25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
+/* 1.69: «🔁 כאן כבר עבדו» — earlier faults at the same cabinet / within 100 m */
+.histbar{display:flex;align-items:center;gap:8px;margin:6px 12px;padding:8px 10px;border-radius:12px;background:#fff4e0;border:1px solid #e6b35c;color:#6b4300;font-size:14px;line-height:1.4}
+.histbar .htxt{flex:1}
+.histbar .hsub{font-size:12px;margin-top:2px}
+.histbar .hbtn{flex:none;padding:6px 14px;background:#fff;border:1px solid #d9a441;color:#6b4300;font-weight:700;border-radius:10px}
+.sheet .hlist{display:flex;flex-direction:column;gap:8px}
+.sheet .hsec{font-weight:800;color:#1f3a5f;margin-top:6px}
+.sheet .hitem{border:1px solid #d5dde7;border-radius:12px;padding:8px 10px;background:#fbfcfe;font-size:14px;line-height:1.45}
+.sheet .hitem .hline,.sheet .hitem .hsol{margin-top:2px;white-space:pre-line}
+.sheet .hitem .hplace{margin-top:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sheet .hitem .wazebtn{margin:0}
+.histbar.bad{background:#ffe3e3;border-color:#e09a9a;color:#7a1c1c}
+.histbar.bad .hbtn{border-color:#e09a9a;color:#7a1c1c}
+.sheet .hitem .hopen{margin-top:6px;padding:5px 12px;font-size:13px;background:#eef3fa;border:1px solid #c9d6e4;border-radius:10px;color:#1f3a5f;font-weight:700}

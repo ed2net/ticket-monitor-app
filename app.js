@@ -1,7 +1,7 @@
 /* Ticket Monitor mobile (PWA) — the same Supabase database as the desktop program Ticket Monitor 10.x.
    No libraries: REST + auth over fetch, live updates and "who is online" over one WebSocket (Phoenix protocol). */
 'use strict';
-const APP_VERSION = 'mobile 1.68';
+const APP_VERSION = 'mobile 1.69';
 const CFG = window.TM_CONFIG || {};
 const TOPIC = 'realtime:ticketmonitor';
 
@@ -1050,7 +1050,7 @@ function fieldHtml(c) {
     : c === 'cabinet' ? `<span class="navbtns"><button class="wazebtn" id="cabwaze" type="button">Waze לארונית</button>${S.readonly ? '' : '<button class="pinbtn" id="cabpin" type="button">📍 מיקום הארונית</button>'}</span>` : '';   // 1.52
   const req = reqFields(), vm = isTech() && !canEdit(c) ? '' : req.open.has(LABEL[c]) ? ' rq-open' : req.close.has(LABEL[c]) ? ' rq-close' : '';   // 1.44: a technician — only his fields   // 1.29: required fields
   return `<div class="f${DATE_COLS.has(c) ? ' dt' : ''}${vm}" id="f-${c}"><label>${esc(LABEL[c])}${fiber}</label>${input}${now}</div>`
-    + (c === 'cabinet' ? '<div class="cabhint hidden" id="cabhint"></div>' : c === 'fault' ? placeHtml() : '');
+    + (c === 'fault' ? placeHtml() : '');       // 1.69: the hint under ארונית → «🔁 כאן כבר עבדו» at the top
 }
 function placeHtml() {                  // 1.52: «מקום התקלה» — a short text + the point (GPS / link)
   const b = S.card.before, ro = !canEdit('fault_place') ? 'readonly' : '';
@@ -1130,7 +1130,7 @@ function renderCard() {
 
   app().innerHTML = `<div class="screen">
     <div class="top"><div class="toprow"><div class="title"><button class="back" id="back">→</button><span>${esc(title)}</span></div>${isNew || isTech() ? '' : '<button class="icon" id="hist">🕘</button>'}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
-    <div id="others"></div><div id="dupnew"></div><div id="remote"></div><div id="rembox"></div><div id="photobox"></div>
+    <div id="others"></div><div id="dupnew"></div><div id="remote"></div><div id="histbox"></div><div id="rembox"></div><div id="photobox"></div>
     ${S.readonly ? '<div class="banner grey">מצב לא מקוון — קריאה בלבד. אפשר להעתיק ולשלוח ב-WhatsApp.</div>' : ''}
     <div class="form">
       <div class="box first">${COLS.map(fieldHtml).join('')}</div>   <!-- all the fields, same order as the table / desktop card (+ מקום התקלה) -->
@@ -1519,6 +1519,8 @@ function remoteDeleted() {
 }
 async function closeCard() {
   if (S.card && S.card.dirty && !S.readonly && !await ask('שינויים לא נשמרו', 'לסגור את הכרטיס בלי לשמור?', 'סגור בלי לשמור', 'המשך לערוך', true)) return;
+  const back = S.card && S.card.backTo;                   // 1.69: opened from «כאן כבר עבדו» → back to that ticket
+  if (back != null && S.recs.has(back)) { openCard(back); return; }
   renderList();
 }
 
@@ -1813,21 +1815,105 @@ function placeRefresh() {
   const cw = $('#cabwaze'), cpb = $('#cabpin');
   if (cw) { cw.disabled = !cp; cw.classList.toggle('off', !cp); }
   if (cpb) { cpb.disabled = !key || S.cabOk === false; cpb.textContent = cp ? '📍 שנה מיקום' : '📍 מיקום הארונית'; }
-  const h = $('#cabhint'), past = key ? pastFaults(key, S.card.id) : [];
-  if (h) {
-    if (!past.length) { h.classList.add('hidden'); h.innerHTML = ''; }
-    else {
-      const r = past[0], p = parseGeo(r.fault_geo);
-      h.innerHTML = `⚠ בארונית הזו בעבר: <b>${esc(r.fault_place || 'מקום התקלה שמור')}</b> · ${esc((r.entry_date || '').slice(0, 10))} · טיקט <bdi dir="ltr">${esc(r.fdt)}</bdi>${past.length > 1 ? ` (+${past.length - 1})` : ''}`
-        + (p ? `<button class="wazebtn" id="hintwaze" type="button">Waze</button>` : '');
-      h.classList.remove('hidden');
-      const hw = $('#hintwaze'); if (hw) hw.onclick = e => { e.preventDefault(); window.open(wazeLL(p), '_blank'); };
-    }
-  }
+  histKick();                                   // 1.69
   const g = inputOf('fault_geo'), fp = parseGeo(g ? g.value : '');
   ['#fwaze', '#fmaps'].forEach(id => { const b = $(id); if (b) { b.disabled = !fp; b.classList.toggle('off', !fp); } });
   const line = $('#fgeo'); if (line) line.innerHTML = fp ? `📍 <bdi dir="ltr">${fp[0].toFixed(5)}, ${fp[1].toFixed(5)}</bdi>` : '';
   if (off) { const f = $('#f-fault_place'); if (f && MISSING.has('fault_geo')) f.classList.add('hidden'); if (cpb && S.cabOk === false) cpb.classList.add('hidden'); }
+}
+// ───────────── 1.69 / 11.46: «🔁 כאן כבר עבדו» — earlier faults at the same ארונית (first) and within 100 m ─────────────
+const PLACE_RADIUS = 100;
+const CANCEL_RX = /בוטל|ביטול|cancel/i;
+function histPoint(r) {                 // the place of a ticket: fault GPS → cabinet GPS of the closing on the spot → its cabinet
+  const ck = closeCheck(r), k = cabKey(r.site, r.cabinet), cr = k && S.cabs ? S.cabs.get(k) : null;
+  return parseGeo(r.fault_geo || '') || parseGeo((ck && ck.cab && ck.cab.geo) || '') || (cr ? parseGeo(cr.geo) : null);
+}
+function histLocal(key, point, exceptId) {   // the same rules as place_history() in 32_place_history.sql (office, without SQL 32)
+  if (!point && key && S.cabs && S.cabs.get(key)) point = parseGeo(S.cabs.get(key).geo);
+  if (!key && !point) return [];
+  const out = [];
+  for (const r of (S.recs ? S.recs.values() : [])) {
+    if ((exceptId != null && r.id === exceptId) || CANCEL_RX.test(r.status || '')) continue;
+    const same = !!key && cabKey(r.site, r.cabinet) === key, p = histPoint(r), d = distM(point, p);
+    if (same || (d != null && d <= PLACE_RADIUS)) out.push({...r, same_cab: same, dist: d, geo: p ? `${p[0].toFixed(6)},${p[1].toFixed(6)}` : '', photos: null});
+  }
+  const t = r => { const d = parseDate(serverDateText(r.entry_date)) || parseDate(r.entry_date); return d ? d.getTime() : -Infinity; };
+  return out.sort((a, b) => (b.same_cab - a.same_cab) || (t(b) - t(a)) || ((b.id || 0) - (a.id || 0)));
+}
+async function histLoad(key, point, exceptId) {
+  if (S.histSql !== false && !S.readonly) {
+    try {
+      const [site, cab] = key ? key.split('|') : ['', ''];
+      const r = await S.cloud.rpc('place_history', {p_site: site || '', p_cabinet: cab || '', p_geo: point ? `${point[0]},${point[1]}` : '',
+                                                    p_exclude: exceptId == null ? null : exceptId, p_radius: PLACE_RADIUS});
+      if (Array.isArray(r)) { S.histSql = true; return r; }
+    } catch (e) {
+      if (e instanceof AuthError) throw e;
+      if (e.status === 404 || e.code === 'PGRST202' || e.code === '42883') S.histSql = false;
+      else if (!(e instanceof OfflineError)) console.warn('place_history', e);
+    }
+  }
+  return isTech() ? [] : histLocal(key, point, exceptId);    // a technician sees only his tickets — the history needs SQL 32
+}
+function histKick() {
+  clearTimeout(histKick.t);
+  histKick.t = setTimeout(async () => {
+    const c = S.card; if (!c || !$('#histbox')) return;
+    const {key} = cabNow(), g = inputOf('fault_geo'), own = parseGeo(g ? g.value : '');
+    const sig = `${key}|${own ? own.join(',') : ''}`;
+    if (c.histSig === sig && c.hist) return renderHist();
+    c.histSig = sig;
+    let rows = [];
+    try { rows = await histLoad(key, own, c.id); } catch {}
+    if (S.card !== c || c.histSig !== sig) return;
+    c.hist = rows;
+    renderHist();
+  }, 450);
+}
+const HIST_RECENT_DAYS = 182, HIST_BAD_DAYS = 30, HIST_BAD = 3;      // Edi: 3+ faults in a month → a problem place (red)
+function histRecent(h, days = HIST_RECENT_DAYS) { const lim = Date.now() - days * 864e5;
+  return h.filter(r => { const d = parseDate(serverDateText(r.entry_date) || norm(r.entry_date)); return d && d.getTime() >= lim; }).length; }
+const histDay = r => { const t = serverDateText(r.entry_date) || norm(r.entry_date); return t.slice(0, 10); };
+function renderHist() {
+  const box = $('#histbox'), c = S.card; if (!box || !c) return;
+  const h = c.hist || [];
+  if (!h.length) { box.innerHTML = ''; return; }
+  const same = h.filter(r => r.same_cab).length, near = h.length - same;
+  const last = histDay(h[0]) || '—', recent = histRecent(h), month = histRecent(h, HIST_BAD_DAYS), bad = month >= HIST_BAD;
+  box.innerHTML = `<div class="histbar${bad ? ' bad' : ''}"><div class="htxt">${bad ? '⚠ <b>מקום בעייתי</b> · ' : '🔁 '}<b>כאן כבר עבדו: ${h.length}</b> · אחרון <bdi dir="ltr">${esc(last)}</bdi>
+      <div class="hsub">${[`חודש: <b>${month}</b>`, `6 חודשים: <b>${recent}</b>`, same ? `ארונית: <b>${same}</b>` : '', near ? `בסביבה (עד ${PLACE_RADIUS} מ׳): <b>${near}</b>` : ''].filter(Boolean).join(' · ')}</div></div>
+      <button class="btn hbtn" id="histopen" type="button">פרטים</button></div>`;
+  $('#histopen').onclick = e => { e.preventDefault(); histSheet(); };
+}
+const distText = d => d == null ? '' : d >= 1000 ? `${(d / 1000).toFixed(1)} ק״מ` : `${d} מ׳`;
+function histItem(r) {
+  const p = parseGeo(r.geo || ''), addr = [r.street, r.house].map(norm).filter(Boolean).join(' '), cab = [r.site, r.cabinet].map(norm).filter(Boolean).join(' / ');
+  const line = [norm(r.contractor), norm(r.fault), addr, !r.same_cab && cab ? 'ארונית ' + cab : ''].filter(Boolean).join(' · ');
+  const place = [norm(r.fault_place), !r.same_cab && r.dist != null ? distText(r.dist) + ' מכאן' : ''].filter(Boolean).join(' · ');
+  return `<div class="hitem"><div class="hhead"><b class="fdt f-${stClass(r)}"><bdi dir="ltr">${esc(r.fdt)}</bdi></b> · <bdi dir="ltr">${esc(histDay(r) || '—')}</bdi> · ${esc(norm(r.status))}${r.photos ? ` · 📷 ${r.photos}` : ''}</div>
+    ${line ? `<div class="hline">${esc(line)}</div>` : ''}
+    ${norm(r.solution) ? `<div class="hsol"><b>פתרון:</b> ${esc(norm(r.solution))}</div>` : ''}
+    ${place || p ? `<div class="hplace">${place ? '📍 ' + esc(place) : ''}${p ? `<button class="wazebtn" type="button" data-ll="${esc(r.geo)}">Waze</button>` : ''}</div>` : ''}
+    ${!isTech() && S.recs && S.recs.has(+r.id) ? `<button class="btn hopen" type="button" data-open="${+r.id}">פתח טיקט</button>` : ''}</div>`;
+}
+function histSheet() {
+  const h = (S.card && S.card.hist) || []; if (!h.length) return;
+  const same = h.filter(r => r.same_cab), near = h.filter(r => !r.same_cab);
+  const s = sheet(`<h3>🔁 כאן כבר עבדו</h3><div class="hlist">
+      ${same.length ? `<div class="hsec">🗄 אותה ארונית · ${same.length}</div>${same.map(histItem).join('')}` : ''}
+      ${near.length ? `<div class="hsec">📍 בסביבה (עד ${PLACE_RADIUS} מ׳) · ${near.length}</div>${near.map(histItem).join('')}` : ''}</div>
+      <div class="btns"><button class="btn" id="hclose">סגור</button></div>`);
+  s.querySelectorAll('[data-ll]').forEach(b => b.onclick = e => { e.preventDefault(); const p = parseGeo(b.dataset.ll); if (p) window.open(wazeLL(p), '_blank'); });
+  s.querySelectorAll('[data-open]').forEach(b => b.onclick = e => { e.preventDefault(); histOpen(+b.dataset.open); });
+  $('#hclose').onclick = closeSheet;
+}
+async function histOpen(id) {                    // 1.69: the office opens the earlier ticket; «חזרה» comes back here
+  const c = S.card; if (!c || !S.recs.has(id)) return;
+  closeSheet();
+  if (c.dirty && !S.readonly && !await ask('שינויים לא נשמרו', 'לעבור לטיקט הקודם בלי לשמור?', 'עבור בלי לשמור', 'המשך לערוך', true)) return;
+  const from = c.id;
+  openCard(id);
+  if (S.card && from != null) S.card.backTo = from;
 }
 function placeHook() {
   if (!$('#f-cabinet')) return;
